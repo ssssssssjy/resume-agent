@@ -1,0 +1,102 @@
+# Resume Agent - 完整部署环境
+# 包含：前端 + 后端 API + PostgreSQL 数据库
+#
+# 使用方式：
+#   # 一键构建并启动所有服务
+#   docker-compose -f deploy/docker-compose.yml up -d --build
+#
+#   # 或分步操作：
+#   docker build -f deploy/Dockerfile -t resume-agent:latest .
+#   docker build -f deploy/Dockerfile.frontend -t resume-agent-frontend:latest .
+#   docker-compose -f deploy/docker-compose.yml up -d
+#
+# 访问地址：
+#   前端界面：http://localhost:3000
+#   后端 API：http://localhost:8123
+
+services:
+  # Resume Agent 前端服务
+  resume-agent-frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+      args:
+        - NEXT_PUBLIC_API_URL=http://resume-agent-api:8000
+    image: resume-agent-frontend:latest
+    container_name: resume-agent-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - TZ=Asia/Shanghai
+    depends_on:
+      resume-agent-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # Resume Agent API 服务
+  resume-agent-api:
+    image: resume-agent:latest
+    container_name: resume-agent-api
+    restart: unless-stopped
+    ports:
+      - "8123:8000"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-local}
+      - TZ=Asia/Shanghai
+      # OpenAI 配置（从 .env 或命令行传入）
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_API_BASE=${OPENAI_API_BASE}
+      # LangGraph checkpoint 数据库
+      - WORKFLOW_DATABASE_URL=postgresql://postgres:postgres@resume-agent-postgres:5432/langgraph
+      # 应用数据库（用户、会话等）
+      - DATABASE_URL=postgresql://postgres:postgres@resume-agent-postgres:5432/resume_agent
+    depends_on:
+      resume-agent-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # PostgreSQL 数据库（LangGraph + 应用数据）
+  resume-agent-postgres:
+    image: postgres:16
+    container_name: resume-agent-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"  # 使用不同端口避免冲突
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=langgraph
+      - TZ=Asia/Shanghai
+    volumes:
+      - resume_agent_pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  resume_agent_pgdata:
+    driver: local
