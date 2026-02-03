@@ -20,8 +20,8 @@ ENV http_proxy= https_proxy=
 # 复制源码
 COPY apps/frontend/ ./
 
-# 构建时需要设置 API 地址（运行时会被覆盖）
-ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+# API 地址（浏览器访问的外部地址）
+ARG NEXT_PUBLIC_API_URL=http://47.100.221.91:8123
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
 # 构建
