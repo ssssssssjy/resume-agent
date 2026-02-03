@@ -5,6 +5,7 @@ from uuid import uuid4
 import asyncio
 import logging
 
+from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
@@ -491,6 +492,31 @@ class GraphExecutor:
 
         return before, after
 
+    def _serialize_message_data(self, data: Any) -> Any:
+        """序列化消息数据，将 LangChain 消息对象转换为可 JSON 序列化的格式。
+
+        messages 模式返回的数据可能是：
+        - BaseMessage 或其子类（AIMessage, HumanMessage, ToolMessage 等）
+        - (message, metadata) tuple
+        - list of messages
+        """
+        if isinstance(data, BaseMessage):
+            # 将 LangChain 消息对象转换为 dict
+            return data.model_dump()
+        elif isinstance(data, tuple) and len(data) == 2:
+            # (message, metadata) 格式
+            msg, metadata = data
+            if isinstance(msg, BaseMessage):
+                return [msg.model_dump(), metadata]
+            return data
+        elif isinstance(data, list):
+            # 消息列表
+            return [
+                item.model_dump() if isinstance(item, BaseMessage) else item
+                for item in data
+            ]
+        return data
+
     def _chunk_to_event(self, chunk: Any, stream_mode: str | list[str]) -> SSEEvent:
         """将 LangGraph chunk 转换为 SSE 事件。
 
@@ -505,6 +531,9 @@ class GraphExecutor:
         - 有 subgraphs: event: {mode}|{namespace_path}
           例如: event: messages|respond:5ecec403-30a5-ebd1-8c53-4745946ec2df
         """
+        # 检查是否需要序列化消息数据
+        current_mode = stream_mode if isinstance(stream_mode, str) else "values"
+
         if isinstance(chunk, tuple):
             if len(chunk) == 2:
                 # (mode, data) 或 (namespace, data)
@@ -513,20 +542,34 @@ class GraphExecutor:
                     # (namespace, data) - subgraphs 单模式
                     namespace, data = chunk
                     mode = stream_mode if isinstance(stream_mode, str) else "values"
+                    # 如果是 messages 模式，序列化消息数据
+                    if mode in ("messages", "messages-tuple"):
+                        data = self._serialize_message_data(data)
                     event_name = self._format_event_name(mode, namespace)
                     return SSEEvent(event=event_name, data=data)
                 else:
                     # (mode, data) - 多模式无 subgraphs
                     mode, data = chunk
+                    # 如果是 messages 模式，序列化消息数据
+                    if mode in ("messages", "messages-tuple"):
+                        data = self._serialize_message_data(data)
                     return SSEEvent(event=mode, data=data)
             elif len(chunk) == 3:
                 # (namespace, mode, data) - 多模式有 subgraphs
                 namespace, mode, data = chunk
+                # 如果是 messages 模式，序列化消息数据
+                if mode in ("messages", "messages-tuple"):
+                    data = self._serialize_message_data(data)
                 event_name = self._format_event_name(mode, namespace)
                 return SSEEvent(event=event_name, data=data)
+
         # 单模式无 subgraphs: 直接返回 data
+        data = chunk
+        # 如果是 messages 模式，序列化消息数据
+        if current_mode in ("messages", "messages-tuple"):
+            data = self._serialize_message_data(data)
         return SSEEvent(
-            event=stream_mode if isinstance(stream_mode, str) else "values", data=chunk
+            event=current_mode, data=data
         )
 
     def _format_event_name(self, mode: str, namespace: tuple[str, ...]) -> str:
