@@ -21,7 +21,9 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.frontend
       args:
-        - NEXT_PUBLIC_API_URL=http://resume-agent-api:8000
+        # 使用相对路径，让浏览器通过同一域名访问 API（需要 nginx 反代）
+        # 或者使用服务器外部地址（直接访问）
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8123}
     image: resume-agent-frontend:latest
     container_name: resume-agent-frontend
     restart: unless-stopped
