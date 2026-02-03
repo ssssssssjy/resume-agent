@@ -42,6 +42,9 @@ services:
 
   # Resume Agent API 服务
   resume-agent-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: resume-agent:latest
     container_name: resume-agent-api
     restart: unless-stopped
