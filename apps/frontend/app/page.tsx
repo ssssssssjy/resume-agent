@@ -244,47 +244,58 @@ export default function HomePage() {
 
     // 后台发送 resume 到 backend，不阻塞 UI
     setIsLoading(true);
-    let latestBackendContent: string | null = null;
     try {
       const stream = resumeWithDecision(threadId, currentPendingEdit, "approve");
       let assistantMessage = "";
 
       for await (const event of stream) {
-        console.log("Stream event:", event.type);
-        if (event.type === "state") {
-          const state = event.data as {
-            messages?: Array<{ content: string; type: string }>;
-            files?: Record<string, { content: string[] }>;
-          };
-          console.log("State files keys:", state.files ? Object.keys(state.files) : "no files");
-          // 检查 backend 返回的内容
-          if (state.files && state.files["/resume.md"]) {
-            const backendContent = state.files["/resume.md"].content.join("\n");
-            latestBackendContent = backendContent;
-            console.log("Backend content length:", backendContent.length);
-            console.log("Backend content changed from optimistic:", backendContent !== optimisticContent);
-            // 始终使用 backend 返回的最新内容
-            setPdfText(backendContent);
-            if (pdfFilename) {
-              updateSession({
-                thread_id: threadId,
-                filename: pdfFilename,
-                resume_content: backendContent,
-              }).catch(console.error);
-            }
-          }
-          if (state.messages && state.messages.length > 0) {
-            const lastMsg = state.messages[state.messages.length - 1];
-            if (lastMsg.type === "ai" || lastMsg.type === "AIMessage") {
-              if (lastMsg.content) {
-                assistantMessage = lastMsg.content;
+        console.log("Approve stream event:", event.type, event.data);
+
+        // 工具调用开始 - 显示 loading 状态
+        if (event.type === "tool_call") {
+          const { id, name, args } = event.data as { id: string; name: string; args: Record<string, unknown> };
+          const newToolCall: ToolCall = { name, args, status: "running" };
+          setMessages((prev) => [...prev, { role: "tool", content: "", toolCalls: [newToolCall] }]);
+        }
+
+        // 工具执行完成 - 更新状态
+        if (event.type === "tool_result") {
+          const { name, content } = event.data as { tool_call_id: string; name: string; content: string };
+          setMessages((prev) => {
+            return prev.map((m) => {
+              if (m.role === "tool" && m.toolCalls) {
+                const updatedToolCalls = m.toolCalls.map((tc) =>
+                  tc.name === name && tc.status === "running"
+                    ? { ...tc, status: "success" as const, result: String(content).substring(0, 100) }
+                    : tc
+                );
+                return { ...m, toolCalls: updatedToolCalls };
               }
-            }
-          }
+              return m;
+            });
+          });
+        }
+
+        // AI 回复
+        if (event.type === "ai_message") {
+          assistantMessage = event.data as string;
         }
       }
 
-      console.log("Stream completed. Latest backend content received:", !!latestBackendContent);
+      // 流结束后，标记所有还在 running 的工具调用为完成
+      setMessages((prev) => {
+        return prev.map((m) => {
+          if (m.role === "tool" && m.toolCalls) {
+            const updatedToolCalls = m.toolCalls.map((tc) =>
+              tc.status === "running" ? { ...tc, status: "success" as const } : tc
+            );
+            return { ...m, toolCalls: updatedToolCalls };
+          }
+          return m;
+        });
+      });
+
+      console.log("Approve stream completed.");
 
       // 如果 backend 返回了额外的有意义的消息，追加显示
       if (assistantMessage && !["已完成修改。", "已完成修改", "修改已完成"].includes(assistantMessage.trim())) {
@@ -339,19 +350,51 @@ export default function HomePage() {
       let assistantMessage = "";
 
       for await (const event of stream) {
-        console.log("Resume stream event:", event.type, event.data);
-        if (event.type === "state") {
-          const state = event.data as { messages?: Array<{ content: string; type: string }> };
-          if (state.messages && state.messages.length > 0) {
-            const lastMsg = state.messages[state.messages.length - 1];
-            if (lastMsg.type === "ai" || lastMsg.type === "AIMessage") {
-              if (lastMsg.content) {
-                assistantMessage = lastMsg.content;
+        console.log("Reject stream event:", event.type, event.data);
+
+        // 工具调用开始
+        if (event.type === "tool_call") {
+          const { id, name, args } = event.data as { id: string; name: string; args: Record<string, unknown> };
+          const newToolCall: ToolCall = { name, args, status: "running" };
+          setMessages((prev) => [...prev, { role: "tool", content: "", toolCalls: [newToolCall] }]);
+        }
+
+        // 工具执行完成
+        if (event.type === "tool_result") {
+          const { name, content } = event.data as { tool_call_id: string; name: string; content: string };
+          setMessages((prev) => {
+            return prev.map((m) => {
+              if (m.role === "tool" && m.toolCalls) {
+                const updatedToolCalls = m.toolCalls.map((tc) =>
+                  tc.name === name && tc.status === "running"
+                    ? { ...tc, status: "success" as const, result: String(content).substring(0, 100) }
+                    : tc
+                );
+                return { ...m, toolCalls: updatedToolCalls };
               }
-            }
-          }
+              return m;
+            });
+          });
+        }
+
+        // AI 回复
+        if (event.type === "ai_message") {
+          assistantMessage = event.data as string;
         }
       }
+
+      // 流结束后，标记所有还在 running 的工具调用为完成
+      setMessages((prev) => {
+        return prev.map((m) => {
+          if (m.role === "tool" && m.toolCalls) {
+            const updatedToolCalls = m.toolCalls.map((tc) =>
+              tc.status === "running" ? { ...tc, status: "success" as const } : tc
+            );
+            return { ...m, toolCalls: updatedToolCalls };
+          }
+          return m;
+        });
+      });
 
       if (assistantMessage) {
         setMessages((prev) => [...prev, { role: "assistant", content: assistantMessage }]);
@@ -429,86 +472,60 @@ export default function HomePage() {
 
       const stream = streamResumeEnhancement(thread_id, initialMessage, initialFiles);
       let assistantMessage = "";
-      let currentToolCalls: ToolCall[] = [];
-      let toolMessageIndex: number | null = null;
 
       for await (const event of stream) {
-        if (event.type === "state") {
-          const state = event.data as {
-            messages?: Array<{
-              content: string;
-              type: string;
-              name?: string;
-              tool_calls?: Array<{ name: string; args: Record<string, unknown> }>;
-            }>
-          };
-          if (state.messages && state.messages.length > 0) {
-            for (let i = state.messages.length - 1; i >= 0; i--) {
-              const msg = state.messages[i];
+        console.log("Initial stream event:", event.type, event.data);
 
-              // 处理工具调用
-              if ((msg.type === "ai" || msg.type === "AIMessage") && msg.tool_calls && msg.tool_calls.length > 0) {
-                const newToolCalls = msg.tool_calls.map(tc => ({
-                  name: tc.name,
-                  args: tc.args,
-                  status: "running" as const,
-                }));
+        // 工具调用开始 - 立即显示 loading 状态
+        if (event.type === "tool_call") {
+          const { id, name, args } = event.data as { id: string; name: string; args: Record<string, unknown> };
+          const newToolCall: ToolCall = { name, args, status: "running" };
+          setMessages((prev) => [...prev, { role: "tool", content: "", toolCalls: [newToolCall] }]);
+        }
 
-                if (JSON.stringify(newToolCalls.map(t => t.name)) !== JSON.stringify(currentToolCalls.map(t => t.name))) {
-                  currentToolCalls = newToolCalls;
-                  setMessages((prev) => {
-                    if (toolMessageIndex !== null) {
-                      const updated = [...prev];
-                      updated[toolMessageIndex] = { role: "tool", content: "", toolCalls: currentToolCalls };
-                      return updated;
-                    } else {
-                      toolMessageIndex = prev.length;
-                      return [...prev, { role: "tool", content: "", toolCalls: currentToolCalls }];
-                    }
-                  });
-                }
-                break;
+        // 工具执行完成 - 更新状态为 success
+        if (event.type === "tool_result") {
+          const { name, content } = event.data as { tool_call_id: string; name: string; content: string };
+          setMessages((prev) => {
+            return prev.map((m) => {
+              if (m.role === "tool" && m.toolCalls) {
+                const updatedToolCalls = m.toolCalls.map((tc) =>
+                  tc.name === name && tc.status === "running"
+                    ? { ...tc, status: "success" as const, result: String(content).substring(0, 100) }
+                    : tc
+                );
+                return { ...m, toolCalls: updatedToolCalls };
               }
+              return m;
+            });
+          });
+        }
 
-              // 处理工具结果
-              if (msg.type === "tool" && msg.name) {
-                setMessages((prev) => {
-                  if (toolMessageIndex !== null && prev[toolMessageIndex]?.toolCalls) {
-                    const updated = [...prev];
-                    const toolCalls = updated[toolMessageIndex].toolCalls!.map(tc =>
-                      tc.name === msg.name ? { ...tc, status: "success" as const } : tc
-                    );
-                    updated[toolMessageIndex] = { ...updated[toolMessageIndex], toolCalls };
-                    return updated;
-                  }
-                  return prev;
-                });
-              }
+        // AI 最终回复
+        if (event.type === "ai_message") {
+          assistantMessage = event.data as string;
+        }
 
-              // 处理最终回复
-              if ((msg.type === "ai" || msg.type === "AIMessage") && msg.content && !msg.tool_calls) {
-                assistantMessage = msg.content;
-                break;
-              }
-            }
-          }
+        // 错误处理
+        if (event.type === "error") {
+          const errorMsg = typeof event.data === "string" ? event.data : "未知错误";
+          console.error("Initial stream error:", errorMsg);
+          assistantMessage = `抱歉，处理请求时出错：${errorMsg}`;
         }
       }
 
-      // 标记所有工具为完成
-      if (toolMessageIndex !== null) {
-        setMessages((prev) => {
-          const updated = [...prev];
-          if (updated[toolMessageIndex!]?.toolCalls) {
-            const toolCalls = updated[toolMessageIndex!].toolCalls!.map(tc => ({
-              ...tc,
-              status: tc.status === "running" ? "success" as const : tc.status,
-            }));
-            updated[toolMessageIndex!] = { ...updated[toolMessageIndex!], toolCalls };
+      // 流结束后，标记所有还在 running 的工具调用为完成
+      setMessages((prev) => {
+        return prev.map((m) => {
+          if (m.role === "tool" && m.toolCalls) {
+            const updatedToolCalls = m.toolCalls.map((tc) =>
+              tc.status === "running" ? { ...tc, status: "success" as const } : tc
+            );
+            return { ...m, toolCalls: updatedToolCalls };
           }
-          return updated;
+          return m;
         });
-      }
+      });
 
       if (assistantMessage) {
         setMessages((prev) => [...prev, { role: "assistant", content: assistantMessage }]);
@@ -620,77 +637,56 @@ export default function HomePage() {
     try {
       const stream = streamResumeEnhancement(threadId, userMessage);
       let assistantMessage = "";
-      // 用于追踪已处理的工具调用 ID，避免重复显示
-      const processedToolCallIds = new Set<string>();
-      // 用于追踪已完成的工具调用 ID
-      const completedToolCallIds = new Set<string>();
+      // 用于追踪工具调用 ID 到消息索引的映射
+      const toolCallIdToIndex = new Map<string, number>();
 
       for await (const event of stream) {
         console.log("Stream event:", event.type, event.data);
-        if (event.type === "state") {
-          const state = event.data as {
-            messages?: Array<{
-              content: string;
-              type: string;
-              name?: string;
-              tool_call_id?: string;
-              tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
-            }>
+
+        // 工具调用开始 - 立即显示 loading 状态
+        if (event.type === "tool_call") {
+          const { id, name, args } = event.data as { id: string; name: string; args: Record<string, unknown> };
+          const newToolCall: ToolCall = {
+            name,
+            args,
+            status: "running",
           };
-          if (state.messages && state.messages.length > 0) {
-            // 正向遍历所有消息，按顺序处理
-            for (const msg of state.messages) {
-              // 处理工具调用（AI 发起的）
-              if ((msg.type === "ai" || msg.type === "AIMessage") && msg.tool_calls && msg.tool_calls.length > 0) {
-                for (const tc of msg.tool_calls) {
-                  const tcId = tc.id || `${tc.name}-${JSON.stringify(tc.args)}`;
-                  if (!processedToolCallIds.has(tcId)) {
-                    processedToolCallIds.add(tcId);
-                    // 添加新的工具调用消息（running 状态）
-                    const newToolCall: ToolCall = {
-                      name: tc.name,
-                      args: tc.args,
-                      status: completedToolCallIds.has(tcId) ? "success" : "running",
-                    };
-                    setMessages((prev) => [...prev, { role: "tool", content: "", toolCalls: [newToolCall] }]);
-                  }
+          // 添加新的工具调用消息
+          setMessages((prev) => {
+            toolCallIdToIndex.set(id, prev.length);
+            return [...prev, { role: "tool", content: "", toolCalls: [newToolCall] }];
+          });
+        }
+
+        // 工具执行完成 - 更新状态为 success
+        if (event.type === "tool_result") {
+          const { tool_call_id, name, content } = event.data as { tool_call_id: string; name: string; content: string };
+          setMessages((prev) => {
+            return prev.map((m, idx) => {
+              // 找到对应的工具调用消息并更新状态
+              if (m.role === "tool" && m.toolCalls) {
+                const hasMatchingTool = m.toolCalls.some(tc => tc.name === name && tc.status === "running");
+                if (hasMatchingTool) {
+                  const updatedToolCalls = m.toolCalls.map((tc) =>
+                    tc.name === name && tc.status === "running"
+                      ? { ...tc, status: "success" as const, result: String(content).substring(0, 100) }
+                      : tc
+                  );
+                  return { ...m, toolCalls: updatedToolCalls };
                 }
               }
+              return m;
+            });
+          });
+        }
 
-              // 处理工具结果
-              if (msg.type === "tool" && msg.tool_call_id) {
-                if (!completedToolCallIds.has(msg.tool_call_id)) {
-                  completedToolCallIds.add(msg.tool_call_id);
-                  // 更新对应工具调用的状态为成功
-                  setMessages((prev) => {
-                    return prev.map((m) => {
-                      if (m.role === "tool" && m.toolCalls) {
-                        const updatedToolCalls = m.toolCalls.map((tc) => {
-                          const tcId = tc.name === msg.name ? msg.tool_call_id : null;
-                          if (tcId && tc.status === "running") {
-                            return { ...tc, status: "success" as const, result: String(msg.content).substring(0, 100) };
-                          }
-                          return tc;
-                        });
-                        return { ...m, toolCalls: updatedToolCalls };
-                      }
-                      return m;
-                    });
-                  });
-                }
-              }
-            }
+        // AI 最终回复
+        if (event.type === "ai_message") {
+          assistantMessage = event.data as string;
+        }
 
-            // 获取最后一条 AI 消息作为回复（只有没有 tool_calls 的才是最终回复）
-            for (let i = state.messages.length - 1; i >= 0; i--) {
-              const msg = state.messages[i];
-              if ((msg.type === "ai" || msg.type === "AIMessage") && msg.content && (!msg.tool_calls || msg.tool_calls.length === 0)) {
-                assistantMessage = msg.content;
-                break;
-              }
-            }
-          }
-        } else if (event.type === "error") {
+        // 错误处理
+        if (event.type === "error") {
           const errorMsg = typeof event.data === "string" ? event.data : "未知错误";
           console.error("Stream error:", errorMsg);
           assistantMessage = `抱歉，处理请求时出错：${errorMsg}`;
