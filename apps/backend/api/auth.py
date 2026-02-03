@@ -1,10 +1,10 @@
 """用户认证 API - 简单的用户名/密码认证"""
 
+import hashlib
 import secrets
 from datetime import datetime
 from typing import Optional
 
-import bcrypt
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
@@ -14,13 +14,19 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 def hash_password(password: str) -> str:
-    """使用 bcrypt 进行安全的密码哈希"""
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    """使用 SHA256 + salt 进行密码哈希"""
+    salt = secrets.token_hex(16)
+    hashed = hashlib.sha256((password + salt).encode()).hexdigest()
+    return f"{salt}${hashed}"
 
 
 def verify_password(password: str, hashed: str) -> bool:
     """验证密码"""
-    return bcrypt.checkpw(password.encode(), hashed.encode())
+    try:
+        salt, stored_hash = hashed.split("$")
+        return hashlib.sha256((password + salt).encode()).hexdigest() == stored_hash
+    except ValueError:
+        return False
 
 
 def generate_token() -> str:
