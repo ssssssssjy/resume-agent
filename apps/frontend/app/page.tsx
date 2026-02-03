@@ -620,8 +620,10 @@ export default function HomePage() {
     try {
       const stream = streamResumeEnhancement(threadId, userMessage);
       let assistantMessage = "";
-      let currentToolCalls: ToolCall[] = [];
-      let toolMessageIndex: number | null = null;
+      // 用于追踪已处理的工具调用 ID，避免重复显示
+      const processedToolCallIds = new Set<string>();
+      // 用于追踪已完成的工具调用 ID
+      const completedToolCallIds = new Set<string>();
 
       for await (const event of stream) {
         console.log("Stream event:", event.type, event.data);
@@ -636,59 +638,53 @@ export default function HomePage() {
             }>
           };
           if (state.messages && state.messages.length > 0) {
-            // 遍历所有消息，找到工具调用和工具结果
-            for (let i = state.messages.length - 1; i >= 0; i--) {
-              const msg = state.messages[i];
-
-              // 处理工具调用
+            // 正向遍历所有消息，按顺序处理
+            for (const msg of state.messages) {
+              // 处理工具调用（AI 发起的）
               if ((msg.type === "ai" || msg.type === "AIMessage") && msg.tool_calls && msg.tool_calls.length > 0) {
-                const newToolCalls = msg.tool_calls.map(tc => ({
-                  name: tc.name,
-                  args: tc.args,
-                  status: "running" as const,
-                }));
-
-                // 只有当有新的工具调用时才更新
-                if (JSON.stringify(newToolCalls.map(t => t.name)) !== JSON.stringify(currentToolCalls.map(t => t.name))) {
-                  currentToolCalls = newToolCalls;
-
-                  // 添加或更新工具调用消息
-                  setMessages((prev) => {
-                    if (toolMessageIndex !== null) {
-                      // 更新现有的工具消息
-                      const updated = [...prev];
-                      updated[toolMessageIndex] = { role: "tool", content: "", toolCalls: currentToolCalls };
-                      return updated;
-                    } else {
-                      // 添加新的工具消息
-                      toolMessageIndex = prev.length;
-                      return [...prev, { role: "tool", content: "", toolCalls: currentToolCalls }];
-                    }
-                  });
+                for (const tc of msg.tool_calls) {
+                  const tcId = tc.id || `${tc.name}-${JSON.stringify(tc.args)}`;
+                  if (!processedToolCallIds.has(tcId)) {
+                    processedToolCallIds.add(tcId);
+                    // 添加新的工具调用消息（running 状态）
+                    const newToolCall: ToolCall = {
+                      name: tc.name,
+                      args: tc.args,
+                      status: completedToolCallIds.has(tcId) ? "success" : "running",
+                    };
+                    setMessages((prev) => [...prev, { role: "tool", content: "", toolCalls: [newToolCall] }]);
+                  }
                 }
-                break;
               }
 
               // 处理工具结果
-              if (msg.type === "tool" && msg.name && msg.content) {
-                // 更新对应工具的状态为成功
-                setMessages((prev) => {
-                  if (toolMessageIndex !== null && prev[toolMessageIndex]?.toolCalls) {
-                    const updated = [...prev];
-                    const toolCalls = updated[toolMessageIndex].toolCalls!.map(tc =>
-                      tc.name === msg.name
-                        ? { ...tc, status: "success" as const, result: msg.content.substring(0, 100) }
-                        : tc
-                    );
-                    updated[toolMessageIndex] = { ...updated[toolMessageIndex], toolCalls };
-                    return updated;
-                  }
-                  return prev;
-                });
+              if (msg.type === "tool" && msg.tool_call_id) {
+                if (!completedToolCallIds.has(msg.tool_call_id)) {
+                  completedToolCallIds.add(msg.tool_call_id);
+                  // 更新对应工具调用的状态为成功
+                  setMessages((prev) => {
+                    return prev.map((m) => {
+                      if (m.role === "tool" && m.toolCalls) {
+                        const updatedToolCalls = m.toolCalls.map((tc) => {
+                          const tcId = tc.name === msg.name ? msg.tool_call_id : null;
+                          if (tcId && tc.status === "running") {
+                            return { ...tc, status: "success" as const, result: String(msg.content).substring(0, 100) };
+                          }
+                          return tc;
+                        });
+                        return { ...m, toolCalls: updatedToolCalls };
+                      }
+                      return m;
+                    });
+                  });
+                }
               }
+            }
 
-              // 处理最终的 AI 回复
-              if ((msg.type === "ai" || msg.type === "AIMessage") && msg.content && !msg.tool_calls) {
+            // 获取最后一条 AI 消息作为回复（只有没有 tool_calls 的才是最终回复）
+            for (let i = state.messages.length - 1; i >= 0; i--) {
+              const msg = state.messages[i];
+              if ((msg.type === "ai" || msg.type === "AIMessage") && msg.content && (!msg.tool_calls || msg.tool_calls.length === 0)) {
                 assistantMessage = msg.content;
                 break;
               }
@@ -701,20 +697,18 @@ export default function HomePage() {
         }
       }
 
-      // 标记所有工具调用为完成
-      if (toolMessageIndex !== null) {
-        setMessages((prev) => {
-          const updated = [...prev];
-          if (updated[toolMessageIndex!]?.toolCalls) {
-            const toolCalls = updated[toolMessageIndex!].toolCalls!.map(tc => ({
-              ...tc,
-              status: tc.status === "running" ? "success" as const : tc.status,
-            }));
-            updated[toolMessageIndex!] = { ...updated[toolMessageIndex!], toolCalls };
+      // 流结束后，标记所有还在 running 的工具调用为完成
+      setMessages((prev) => {
+        return prev.map((m) => {
+          if (m.role === "tool" && m.toolCalls) {
+            const updatedToolCalls = m.toolCalls.map((tc) =>
+              tc.status === "running" ? { ...tc, status: "success" as const } : tc
+            );
+            return { ...m, toolCalls: updatedToolCalls };
           }
-          return updated;
+          return m;
         });
-      }
+      });
 
       // 如果有文本消息则显示
       if (assistantMessage) {
@@ -915,12 +909,12 @@ export default function HomePage() {
                         className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                       >
                         {msg.role === "tool" && msg.toolCalls ? (
-                          /* 工具调用状态 - 简洁的内联样式 */
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground py-1">
+                          /* 工具调用状态 - 流程展示 */
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground py-1.5 px-3 bg-muted/30 rounded-lg">
                             {msg.toolCalls.some(t => t.status === "running") ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <Loader2 className="w-4 h-4 animate-spin text-primary" />
                             ) : (
-                              <svg className="w-3.5 h-3.5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <svg className="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                               </svg>
                             )}
@@ -931,14 +925,31 @@ export default function HomePage() {
                                   edit_file: "编辑文件",
                                   write_file: "写入文件",
                                   search: "搜索",
+                                  ls: "列出目录",
+                                  glob: "搜索文件",
+                                  grep: "搜索内容",
+                                  execute: "执行命令",
+                                  github_search: "搜索 GitHub",
+                                  search_opensource_projects: "搜索开源项目",
+                                  search_trends: "搜索技术趋势",
+                                  write_todos: "更新待办",
+                                  task: "调用子任务",
                                 };
                                 const name = toolNames[tool.name] || tool.name;
-                                const path = tool.args?.file_path ? ` ${String(tool.args.file_path)}` : "";
+                                // 提取关键参数用于展示
+                                let detail = "";
+                                if (tool.args?.file_path) {
+                                  detail = String(tool.args.file_path);
+                                } else if (tool.args?.query) {
+                                  detail = String(tool.args.query);
+                                } else if (tool.args?.pattern) {
+                                  detail = String(tool.args.pattern);
+                                }
                                 return (
                                   <span key={i}>
-                                    {i > 0 && "、"}
+                                    {i > 0 && " → "}
                                     {name}
-                                    {path && <code className="text-xs bg-muted px-1 py-0.5 rounded ml-1">{path}</code>}
+                                    {detail && <code className="text-xs bg-muted px-1.5 py-0.5 rounded ml-1.5">{detail}</code>}
                                   </span>
                                 );
                               })}
