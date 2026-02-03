@@ -1,5 +1,10 @@
 FROM python:3.11-slim
 
+# 构建时代理参数（可选）
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ENV http_proxy=${HTTP_PROXY} https_proxy=${HTTPS_PROXY}
+
 WORKDIR /app
 
 # 从官方镜像复制 uv 二进制（约 10MB，非常快）
@@ -9,6 +14,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
+
+# 清除代理环境变量（运行时不需要）
+ENV http_proxy= https_proxy=
 
 # 复制依赖文件（利用 Docker 缓存，依赖不变时跳过安装）
 COPY pyproject.toml uv.lock* /app/
