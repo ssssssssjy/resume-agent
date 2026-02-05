@@ -22,7 +22,7 @@ import logging
 import os
 
 from deepagents import create_deep_agent
-from deepagents.middleware.subagents import SubAgentMiddleware, SubAgent
+from deepagents.middleware.subagents import SubAgent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph
@@ -180,23 +180,16 @@ def _build_graph() -> StateGraph:
             # 启用 debug 模式（控制台输出工具调用详情）
             enable_debug = os.getenv("ENVIRONMENT", "").lower() in ["local", "test"]
 
-            # 创建 SubAgentMiddleware，提供 task 工具
-            subagent_middleware = SubAgentMiddleware(
-                default_model=self.model,
-                subagents=[self.research_subagent],
-                general_purpose_agent=False,  # 只使用自定义的 research agent
-            )
-
-            # create_deep_agent 已内置 FilesystemMiddleware
+            # create_deep_agent 已内置 SubAgentMiddleware，通过 subagents 参数传入
             return create_deep_agent(
                 model=self.model,
                 tools=[],  # 主 Agent 不直接使用搜索工具，通过 task 调用子 Agent
                 system_prompt=SYSTEM_PROMPT,
                 checkpointer=checkpointer,
                 debug=enable_debug,
+                subagents=[self.research_subagent],  # 传入研究子 Agent
                 middleware=[
                     EditValidationMiddleware(),  # 验证 edit_file 参数
-                    subagent_middleware,         # 提供 task 工具启动子 Agent
                 ],
                 # Human-in-the-loop: 编辑文件前需要用户确认
                 interrupt_on={
