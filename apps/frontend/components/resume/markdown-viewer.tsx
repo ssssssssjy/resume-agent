@@ -8,6 +8,30 @@ import { FileText, Loader2, Check, X } from "lucide-react";
 import { diffLines, Change } from "diff";
 import type { PendingEdit } from "@/api/langgraph";
 
+// 三层匹配策略（与 page.tsx 保持一致）
+function findMatchingString(
+  targetString: string,
+  content: string
+): { found: boolean; matchedString: string } {
+  // 第一层：精确匹配
+  if (content.includes(targetString)) {
+    return { found: true, matchedString: targetString };
+  }
+
+  const trimmedTarget = targetString.trim();
+  const lines = content.split("\n");
+
+  // 第二层：trim 匹配
+  for (const line of lines) {
+    if (line.trim() === trimmedTarget || line.includes(trimmedTarget)) {
+      return { found: true, matchedString: line };
+    }
+  }
+
+  // 第三层略（组件内不做模糊匹配，依赖 page.tsx 传入已修正的值）
+  return { found: false, matchedString: targetString };
+}
+
 interface MarkdownViewerProps {
   content: string;
   isLoading?: boolean;
@@ -30,15 +54,30 @@ export function MarkdownViewer({
   // Calculate preview content with pending edit applied
   const previewContent = useMemo(() => {
     if (!pendingEdit || !content) return null;
-    console.log("MarkdownViewer: pendingEdit exists, oldString length:", pendingEdit.oldString.length);
-    console.log("MarkdownViewer: content length:", content.length);
-    console.log("MarkdownViewer: content includes oldString:", content.includes(pendingEdit.oldString));
-    const result = content.replace(pendingEdit.oldString, pendingEdit.newString);
+
+    // 调试：打印 oldString 和 content 的详细信息
+    console.log("=== MarkdownViewer Debug ===");
+    console.log("oldString length:", pendingEdit.oldString.length);
+    console.log("oldString lines:", pendingEdit.oldString.split("\n").length);
+    console.log("oldString (full):", JSON.stringify(pendingEdit.oldString));
+    console.log("content length:", content.length);
+    console.log("direct includes:", content.includes(pendingEdit.oldString));
+
+    // 使用三层匹配策略找到实际的 oldString
+    const match = findMatchingString(pendingEdit.oldString, content);
+    console.log("match result:", match);
+
+    const result = content.replace(match.matchedString, pendingEdit.newString);
+
     // 检查替换是否成功
     if (result === content) {
-      console.warn("pendingEdit.oldString not found in content");
-      console.log("oldString (first 150 chars):", JSON.stringify(pendingEdit.oldString.substring(0, 150)));
-      console.log("content (first 300 chars):", JSON.stringify(content.substring(0, 300)));
+      // 检查是否是空操作（oldString === newString）
+      if (pendingEdit.oldString === pendingEdit.newString) {
+        console.warn("MarkdownViewer: oldString === newString (no-op edit from Agent)");
+      } else {
+        console.warn("MarkdownViewer: oldString not found after matching");
+      }
+      console.log("newString:", JSON.stringify(pendingEdit.newString));
     }
     return result;
   }, [content, pendingEdit]);

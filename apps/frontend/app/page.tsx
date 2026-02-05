@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Loader2, Sparkles, FileText, X, Plus, History, Trash2, LogOut, User } from "lucide-react";
+import { Send, Loader2, Sparkles, FileText, X, Plus, History, Trash2, LogOut, User, ChevronDown, ChevronRight, FileCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { MarkdownViewer } from "@/components/resume/markdown-viewer";
 import { PDFUpload } from "@/components/resume/pdf-upload";
 import { LoginForm } from "@/components/auth/login-form";
@@ -34,6 +35,145 @@ interface Message {
   toolCalls?: ToolCall[];
 }
 
+// LangGraph state message 类型
+interface StateMessage {
+  type: string;
+  content: string | Array<{ type: string; text?: string }>;
+  tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
+  name?: string;
+  tool_call_id?: string;
+}
+
+// Levenshtein 距离计算（用于模糊匹配）
+function levenshteinDistance(a: string, b: string): number {
+  const matrix: number[][] = [];
+  for (let i = 0; i <= b.length; i++) {
+    matrix[i] = [i];
+  }
+  for (let j = 0; j <= a.length; j++) {
+    matrix[0][j] = j;
+  }
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // 替换
+          matrix[i][j - 1] + 1,     // 插入
+          matrix[i - 1][j] + 1      // 删除
+        );
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+// 计算字符串相似度 (0-1, 1 为完全匹配)
+function stringSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length === 0 || b.length === 0) return 0;
+  const distance = levenshteinDistance(a, b);
+  const maxLen = Math.max(a.length, b.length);
+  return 1 - distance / maxLen;
+}
+
+// 三层匹配策略：精确匹配 → trim 匹配 → 模糊匹配
+// 返回 { found: boolean, matchedString: string }
+function findMatchingString(
+  targetString: string,
+  content: string,
+  similarityThreshold = 0.85
+): { found: boolean; matchedString: string } {
+  // 第一层：精确匹配
+  if (content.includes(targetString)) {
+    return { found: true, matchedString: targetString };
+  }
+
+  const trimmedTarget = targetString.trim();
+  const lines = content.split("\n");
+
+  // 第二层：trim 匹配
+  for (const line of lines) {
+    if (line.trim() === trimmedTarget || line.includes(trimmedTarget)) {
+      return { found: true, matchedString: line };
+    }
+  }
+
+  // 第三层：模糊匹配
+  let bestMatch = { line: "", similarity: 0 };
+  for (const line of lines) {
+    const similarity = stringSimilarity(line.trim(), trimmedTarget);
+    if (similarity > bestMatch.similarity && similarity >= similarityThreshold) {
+      bestMatch = { line, similarity };
+    }
+  }
+
+  if (bestMatch.similarity >= similarityThreshold) {
+    return { found: true, matchedString: bestMatch.line };
+  }
+
+  return { found: false, matchedString: targetString };
+}
+
+// 从 LangGraph state 的 files 中提取 /references/ 目录下的参考文档
+function extractReferenceFiles(files: Record<string, { content: string[]; modified_at?: string }> | undefined): Record<string, { content: string[]; modified_at?: string }> {
+  if (!files) return {};
+  const refs: Record<string, { content: string[]; modified_at?: string }> = {};
+  for (const [path, data] of Object.entries(files)) {
+    if (path.startsWith("/references/")) {
+      refs[path] = data;
+    }
+  }
+  return refs;
+}
+
+// 从 LangGraph state 的 messages 数组解析为前端 Message 格式
+function parseStateMessages(stateMessages: StateMessage[]): Message[] {
+  const result: Message[] = [];
+  // 用于追踪哪些工具调用已经有结果了
+  const completedToolCallIds = new Set<string>();
+
+  // 先收集所有 ToolMessage 的 tool_call_id
+  for (const msg of stateMessages) {
+    if ((msg.type === "tool" || msg.type === "ToolMessage") && msg.tool_call_id) {
+      completedToolCallIds.add(msg.tool_call_id);
+    }
+  }
+
+  for (const msg of stateMessages) {
+    // Human message
+    if (msg.type === "human" || msg.type === "HumanMessage") {
+      const content = typeof msg.content === "string"
+        ? msg.content
+        : msg.content.filter(b => b.type === "text").map(b => b.text || "").join("\n");
+      result.push({ role: "user", content });
+    }
+    // AI message with tool_calls - 显示工具调用状态
+    else if ((msg.type === "ai" || msg.type === "AIMessage") && msg.tool_calls && msg.tool_calls.length > 0) {
+      const toolCalls: ToolCall[] = msg.tool_calls.map(tc => ({
+        name: tc.name,
+        args: tc.args,
+        // 如果这个工具调用的结果已经存在，状态就是 success，否则是 running
+        status: tc.id && completedToolCallIds.has(tc.id) ? "success" as const : "running" as const,
+      }));
+      result.push({ role: "tool", content: "", toolCalls });
+    }
+    // AI message without tool_calls - 显示文本回复
+    else if (msg.type === "ai" || msg.type === "AIMessage") {
+      const content = typeof msg.content === "string"
+        ? msg.content
+        : msg.content.filter(b => b.type === "text").map(b => b.text || "").join("\n");
+      if (content) {
+        result.push({ role: "assistant", content });
+      }
+    }
+    // ToolMessage - 工具结果（不单独显示，已经在上面的 tool_calls 中标记状态了）
+  }
+
+  return result;
+}
+
 export default function HomePage() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfFilename, setPdfFilename] = useState<string>("");
@@ -48,6 +188,8 @@ export default function HomePage() {
   const [pendingEdit, setPendingEdit] = useState<PendingEdit | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const [referenceFiles, setReferenceFiles] = useState<Record<string, { content: string[]; modified_at?: string }>>({});
+  const [activeFile, setActiveFile] = useState<string | null>(null); // null = 显示简历, 其他 = 参考文档路径
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Check auth on mount
@@ -103,19 +245,22 @@ export default function HomePage() {
           setPdfText(currentContent);
 
           if (state?.values?.messages) {
-            const restoredMessages: Message[] = state.values.messages
-              .filter((msg: { type: string }) => msg.type === "human" || msg.type === "ai" || msg.type === "HumanMessage" || msg.type === "AIMessage")
-              .map((msg: { type: string; content: string }) => ({
-                role: (msg.type === "human" || msg.type === "HumanMessage") ? "user" : "assistant",
-                content: msg.content,
-              }));
+            // 使用统一的解析函数，包含工具调用状态
+            const restoredMessages = parseStateMessages(state.values.messages as StateMessage[]);
             setMessages(restoredMessages);
           }
 
-          // Check for pending edits - 使用同步后的 currentContent
+          // 提取参考文档
+          const refs = extractReferenceFiles(state?.values?.files);
+          setReferenceFiles(refs);
+
+          // Check for pending edits - 使用三层匹配策略
           const edit = getPendingEdit(state);
-          if (edit && currentContent.includes(edit.oldString)) {
-            setPendingEdit(edit);
+          if (edit) {
+            const match = findMatchingString(edit.oldString, currentContent);
+            if (match.found) {
+              setPendingEdit({ ...edit, oldString: match.matchedString });
+            }
           }
         } catch {
           // Session not found (可能是切换用户后的旧 session)，静默清理
@@ -154,7 +299,8 @@ export default function HomePage() {
     const formData = new FormData();
     formData.append("file", file);
 
-    const response = await fetch("http://localhost:8000/api/parse-pdf", {
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const response = await fetch(`${apiBase}/api/parse-pdf`, {
       method: "POST",
       body: formData,
     });
@@ -172,7 +318,7 @@ export default function HomePage() {
   const checkForPendingEdit = async (tid: string) => {
     try {
       const state = await getThreadState(tid) as ThreadState;
-      console.log("Thread state tasks:", state.tasks);
+      console.log("=== checkForPendingEdit ===");
       const edit = getPendingEdit(state);
       console.log("Pending edit:", edit);
 
@@ -186,15 +332,18 @@ export default function HomePage() {
           setPdfText(currentContent);
         }
 
-        // 检查 oldString 是否存在于当前内容中
-        if (currentContent && currentContent.includes(edit.oldString)) {
+        // 使用三层匹配策略
+        const match = findMatchingString(edit.oldString, currentContent);
+        if (match.found) {
           console.log("oldString found in content, setting pendingEdit");
-          setPendingEdit(edit);
-          // 不再单独添加消息，左侧预览区会显示 diff 和操作按钮
+          if (match.matchedString !== edit.oldString) {
+            console.log("Corrected oldString from:", edit.oldString.substring(0, 50));
+            console.log("To:", match.matchedString.substring(0, 50));
+          }
+          setPendingEdit({ ...edit, oldString: match.matchedString });
         } else {
-          console.warn("oldString not found in current content, skipping pendingEdit");
-          console.log("oldString (first 100 chars):", edit.oldString.substring(0, 100));
-          console.log("currentContent (first 200 chars):", currentContent.substring(0, 200));
+          console.warn("oldString not found (all 3 layers failed), skipping pendingEdit");
+          console.log("oldString (first 100):", edit.oldString.substring(0, 100));
         }
       }
     } catch (error) {
@@ -209,20 +358,14 @@ export default function HomePage() {
     const currentPendingEdit = pendingEdit;
     const previousContent = pdfText;
 
-    // 调试：检查 oldString 是否存在于 pdfText 中
-    const oldStringExists = pdfText.includes(currentPendingEdit.oldString);
-    console.log("handleApproveEdit called");
-    console.log("oldString exists in pdfText:", oldStringExists);
-    console.log("oldString length:", currentPendingEdit.oldString.length);
-    console.log("pdfText length:", pdfText.length);
-    if (!oldStringExists) {
-      console.warn("oldString not found in pdfText!");
-      console.log("oldString (first 200 chars):", currentPendingEdit.oldString.substring(0, 200));
-      console.log("pdfText (first 500 chars):", pdfText.substring(0, 500));
+    // 使用三层匹配策略找到实际的 oldString
+    const match = findMatchingString(currentPendingEdit.oldString, pdfText);
+    if (!match.found) {
+      console.warn("handleApproveEdit: oldString not found (all 3 layers failed)!");
     }
 
     // 乐观更新：立即应用修改并清除 pending edit
-    const optimisticContent = pdfText.replace(currentPendingEdit.oldString, currentPendingEdit.newString);
+    const optimisticContent = pdfText.replace(match.matchedString, currentPendingEdit.newString);
     const contentChanged = optimisticContent !== pdfText;
     console.log("Content changed after replace:", contentChanged);
 
@@ -246,61 +389,30 @@ export default function HomePage() {
     setIsLoading(true);
     try {
       const stream = resumeWithDecision(threadId, currentPendingEdit, "approve");
-      let assistantMessage = "";
 
       for await (const event of stream) {
         console.log("Approve stream event:", event.type, event.data);
 
-        // 工具调用开始 - 显示 loading 状态
-        if (event.type === "tool_call") {
-          const { id, name, args } = event.data as { id: string; name: string; args: Record<string, unknown> };
-          const newToolCall: ToolCall = { name, args, status: "running" };
-          setMessages((prev) => [...prev, { role: "tool", content: "", toolCalls: [newToolCall] }]);
-        }
+        // values 模式返回完整的 state
+        if (event.type === "state_update") {
+          const state = event.data as {
+            messages?: Array<{
+              type: string;
+              content: string | Array<{ type: string; text?: string }>;
+              tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
+              name?: string;
+              tool_call_id?: string;
+            }>;
+          };
 
-        // 工具执行完成 - 更新状态
-        if (event.type === "tool_result") {
-          const { name, content } = event.data as { tool_call_id: string; name: string; content: string };
-          setMessages((prev) => {
-            return prev.map((m) => {
-              if (m.role === "tool" && m.toolCalls) {
-                const updatedToolCalls = m.toolCalls.map((tc) =>
-                  tc.name === name && tc.status === "running"
-                    ? { ...tc, status: "success" as const, result: String(content).substring(0, 100) }
-                    : tc
-                );
-                return { ...m, toolCalls: updatedToolCalls };
-              }
-              return m;
-            });
-          });
-        }
-
-        // AI 回复
-        if (event.type === "ai_message") {
-          assistantMessage = event.data as string;
+          if (state.messages) {
+            const parsedMessages = parseStateMessages(state.messages);
+            setMessages(parsedMessages);
+          }
         }
       }
-
-      // 流结束后，标记所有还在 running 的工具调用为完成
-      setMessages((prev) => {
-        return prev.map((m) => {
-          if (m.role === "tool" && m.toolCalls) {
-            const updatedToolCalls = m.toolCalls.map((tc) =>
-              tc.status === "running" ? { ...tc, status: "success" as const } : tc
-            );
-            return { ...m, toolCalls: updatedToolCalls };
-          }
-          return m;
-        });
-      });
 
       console.log("Approve stream completed.");
-
-      // 如果 backend 返回了额外的有意义的消息，追加显示
-      if (assistantMessage && !["已完成修改。", "已完成修改", "修改已完成"].includes(assistantMessage.trim())) {
-        setMessages((prev) => [...prev, { role: "assistant", content: assistantMessage }]);
-      }
 
       // Check for more pending edits
       try {
@@ -347,60 +459,31 @@ export default function HomePage() {
 
       // Resume the agent with rejection and stream the response
       const stream = resumeWithDecision(threadId, currentPendingEdit, "reject");
-      let assistantMessage = "";
 
       for await (const event of stream) {
         console.log("Reject stream event:", event.type, event.data);
 
-        // 工具调用开始
-        if (event.type === "tool_call") {
-          const { id, name, args } = event.data as { id: string; name: string; args: Record<string, unknown> };
-          const newToolCall: ToolCall = { name, args, status: "running" };
-          setMessages((prev) => [...prev, { role: "tool", content: "", toolCalls: [newToolCall] }]);
-        }
+        // values 模式返回完整的 state
+        if (event.type === "state_update") {
+          const state = event.data as {
+            messages?: Array<{
+              type: string;
+              content: string | Array<{ type: string; text?: string }>;
+              tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
+              name?: string;
+              tool_call_id?: string;
+            }>;
+          };
 
-        // 工具执行完成
-        if (event.type === "tool_result") {
-          const { name, content } = event.data as { tool_call_id: string; name: string; content: string };
-          setMessages((prev) => {
-            return prev.map((m) => {
-              if (m.role === "tool" && m.toolCalls) {
-                const updatedToolCalls = m.toolCalls.map((tc) =>
-                  tc.name === name && tc.status === "running"
-                    ? { ...tc, status: "success" as const, result: String(content).substring(0, 100) }
-                    : tc
-                );
-                return { ...m, toolCalls: updatedToolCalls };
-              }
-              return m;
-            });
-          });
-        }
-
-        // AI 回复
-        if (event.type === "ai_message") {
-          assistantMessage = event.data as string;
-        }
-      }
-
-      // 流结束后，标记所有还在 running 的工具调用为完成
-      setMessages((prev) => {
-        return prev.map((m) => {
-          if (m.role === "tool" && m.toolCalls) {
-            const updatedToolCalls = m.toolCalls.map((tc) =>
-              tc.status === "running" ? { ...tc, status: "success" as const } : tc
-            );
-            return { ...m, toolCalls: updatedToolCalls };
+          if (state.messages) {
+            const parsedMessages = parseStateMessages(state.messages);
+            setMessages(parsedMessages);
           }
-          return m;
-        });
-      });
-
-      if (assistantMessage) {
-        setMessages((prev) => [...prev, { role: "assistant", content: assistantMessage }]);
-      } else {
-        setMessages((prev) => [...prev, { role: "assistant", content: "已取消修改。" }]);
+        }
       }
+
+      // 添加取消消息提示
+      setMessages((prev) => [...prev, { role: "assistant", content: "已取消修改。" }]);
 
       // Check for more pending edits (different from the one we just rejected)
       try {
@@ -471,64 +554,44 @@ export default function HomePage() {
       setIsLoading(true);
 
       const stream = streamResumeEnhancement(thread_id, initialMessage, initialFiles);
-      let assistantMessage = "";
 
       for await (const event of stream) {
         console.log("Initial stream event:", event.type, event.data);
 
-        // 工具调用开始 - 立即显示 loading 状态
-        if (event.type === "tool_call") {
-          const { id, name, args } = event.data as { id: string; name: string; args: Record<string, unknown> };
-          const newToolCall: ToolCall = { name, args, status: "running" };
-          setMessages((prev) => [...prev, { role: "tool", content: "", toolCalls: [newToolCall] }]);
-        }
+        // values 模式返回完整的 state
+        if (event.type === "state_update") {
+          const state = event.data as {
+            messages?: Array<{
+              type: string;
+              content: string | Array<{ type: string; text?: string }>;
+              tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
+              name?: string;
+              tool_call_id?: string;
+            }>;
+            files?: Record<string, { content: string[]; modified_at?: string }>;
+          };
 
-        // 工具执行完成 - 更新状态为 success
-        if (event.type === "tool_result") {
-          const { name, content } = event.data as { tool_call_id: string; name: string; content: string };
-          setMessages((prev) => {
-            return prev.map((m) => {
-              if (m.role === "tool" && m.toolCalls) {
-                const updatedToolCalls = m.toolCalls.map((tc) =>
-                  tc.name === name && tc.status === "running"
-                    ? { ...tc, status: "success" as const, result: String(content).substring(0, 100) }
-                    : tc
-                );
-                return { ...m, toolCalls: updatedToolCalls };
-              }
-              return m;
-            });
-          });
-        }
+          if (state.messages) {
+            const parsedMessages = parseStateMessages(state.messages);
+            setMessages(parsedMessages);
+          }
 
-        // AI 最终回复
-        if (event.type === "ai_message") {
-          assistantMessage = event.data as string;
+          // 更新参考文档
+          if (state.files) {
+            const refs = extractReferenceFiles(state.files);
+            setReferenceFiles(refs);
+          }
         }
 
         // 错误处理
         if (event.type === "error") {
           const errorMsg = typeof event.data === "string" ? event.data : "未知错误";
           console.error("Initial stream error:", errorMsg);
-          assistantMessage = `抱歉，处理请求时出错：${errorMsg}`;
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: `抱歉，处理请求时出错：${errorMsg}` },
+          ]);
         }
-      }
-
-      // 流结束后，标记所有还在 running 的工具调用为完成
-      setMessages((prev) => {
-        return prev.map((m) => {
-          if (m.role === "tool" && m.toolCalls) {
-            const updatedToolCalls = m.toolCalls.map((tc) =>
-              tc.status === "running" ? { ...tc, status: "success" as const } : tc
-            );
-            return { ...m, toolCalls: updatedToolCalls };
-          }
-          return m;
-        });
-      });
-
-      if (assistantMessage) {
-        setMessages((prev) => [...prev, { role: "assistant", content: assistantMessage }]);
       }
 
       // Check for pending edits
@@ -578,19 +641,22 @@ export default function HomePage() {
       setPdfText(currentContent);
 
       if (state?.values?.messages) {
-        const restoredMessages: Message[] = state.values.messages
-          .filter((msg: { type: string }) => msg.type === "human" || msg.type === "ai" || msg.type === "HumanMessage" || msg.type === "AIMessage")
-          .map((msg: { type: string; content: string }) => ({
-            role: (msg.type === "human" || msg.type === "HumanMessage") ? "user" : "assistant",
-            content: msg.content,
-          }));
+        // 使用统一的解析函数，包含工具调用状态
+        const restoredMessages = parseStateMessages(state.values.messages as StateMessage[]);
         setMessages(restoredMessages);
       }
 
-      // Check for pending edits - 使用同步后的 currentContent
+      // 提取参考文档
+      const refs = extractReferenceFiles(state?.values?.files);
+      setReferenceFiles(refs);
+
+      // Check for pending edits - 使用三层匹配策略
       const edit = getPendingEdit(state);
-      if (edit && currentContent.includes(edit.oldString)) {
-        setPendingEdit(edit);
+      if (edit) {
+        const match = findMatchingString(edit.oldString, currentContent);
+        if (match.found) {
+          setPendingEdit({ ...edit, oldString: match.matchedString });
+        }
       }
       // If there's a stale interrupt (old_string not in content), we ignore it
       // The user can continue chatting normally
@@ -621,6 +687,8 @@ export default function HomePage() {
     setThreadId(null);
     setInput("");
     setPendingEdit(null);
+    setReferenceFiles({});
+    setActiveFile(null);
     // Clear localStorage so refresh won't restore the old session
     localStorage.removeItem("lastThreadId");
   };
@@ -636,79 +704,44 @@ export default function HomePage() {
 
     try {
       const stream = streamResumeEnhancement(threadId, userMessage);
-      let assistantMessage = "";
-      // 用于追踪工具调用 ID 到消息索引的映射
-      const toolCallIdToIndex = new Map<string, number>();
 
       for await (const event of stream) {
         console.log("Stream event:", event.type, event.data);
 
-        // 工具调用开始 - 立即显示 loading 状态
-        if (event.type === "tool_call") {
-          const { id, name, args } = event.data as { id: string; name: string; args: Record<string, unknown> };
-          const newToolCall: ToolCall = {
-            name,
-            args,
-            status: "running",
+        // values 模式返回完整的 state
+        if (event.type === "state_update") {
+          const state = event.data as {
+            messages?: Array<{
+              type: string;
+              content: string | Array<{ type: string; text?: string }>;
+              tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
+              name?: string;
+              tool_call_id?: string;
+            }>;
+            files?: Record<string, { content: string[]; modified_at?: string }>;
           };
-          // 添加新的工具调用消息
-          setMessages((prev) => {
-            toolCallIdToIndex.set(id, prev.length);
-            return [...prev, { role: "tool", content: "", toolCalls: [newToolCall] }];
-          });
-        }
 
-        // 工具执行完成 - 更新状态为 success
-        if (event.type === "tool_result") {
-          const { tool_call_id, name, content } = event.data as { tool_call_id: string; name: string; content: string };
-          setMessages((prev) => {
-            return prev.map((m, idx) => {
-              // 找到对应的工具调用消息并更新状态
-              if (m.role === "tool" && m.toolCalls) {
-                const hasMatchingTool = m.toolCalls.some(tc => tc.name === name && tc.status === "running");
-                if (hasMatchingTool) {
-                  const updatedToolCalls = m.toolCalls.map((tc) =>
-                    tc.name === name && tc.status === "running"
-                      ? { ...tc, status: "success" as const, result: String(content).substring(0, 100) }
-                      : tc
-                  );
-                  return { ...m, toolCalls: updatedToolCalls };
-                }
-              }
-              return m;
-            });
-          });
-        }
+          if (state.messages) {
+            const parsedMessages = parseStateMessages(state.messages);
+            setMessages(parsedMessages);
+          }
 
-        // AI 最终回复
-        if (event.type === "ai_message") {
-          assistantMessage = event.data as string;
+          // 更新参考文档
+          if (state.files) {
+            const refs = extractReferenceFiles(state.files);
+            setReferenceFiles(refs);
+          }
         }
 
         // 错误处理
         if (event.type === "error") {
           const errorMsg = typeof event.data === "string" ? event.data : "未知错误";
           console.error("Stream error:", errorMsg);
-          assistantMessage = `抱歉，处理请求时出错：${errorMsg}`;
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: `抱歉，处理请求时出错：${errorMsg}` },
+          ]);
         }
-      }
-
-      // 流结束后，标记所有还在 running 的工具调用为完成
-      setMessages((prev) => {
-        return prev.map((m) => {
-          if (m.role === "tool" && m.toolCalls) {
-            const updatedToolCalls = m.toolCalls.map((tc) =>
-              tc.status === "running" ? { ...tc, status: "success" as const } : tc
-            );
-            return { ...m, toolCalls: updatedToolCalls };
-          }
-          return m;
-        });
-      });
-
-      // 如果有文本消息则显示
-      if (assistantMessage) {
-        setMessages((prev) => [...prev, { role: "assistant", content: assistantMessage }]);
       }
 
       // Check for pending edits
@@ -811,31 +844,75 @@ export default function HomePage() {
               历史记录
             </div>
             <div className="space-y-1">
-              {sessions.map((session) => (
-                <div
-                  key={session.thread_id}
-                  onClick={() => handleSelectSession(session)}
-                  className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
-                    threadId === session.thread_id
-                      ? "bg-accent"
-                      : "hover:bg-accent/50"
-                  }`}
-                >
-                  <FileText className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm truncate">{session.filename}</p>
-                    <p className="text-xs text-muted-foreground">{formatDate(session.updated_at)}</p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={(e) => handleDeleteSession(e, session.thread_id)}
+              {sessions.map((session) => {
+                const isCurrentSession = threadId === session.thread_id;
+                const isShowingResume = isCurrentSession && activeFile === null;
+                return (
+                <div key={session.thread_id}>
+                  <div
+                    onClick={() => {
+                      if (isCurrentSession) {
+                        // 当前会话：点击切换回简历视图
+                        setActiveFile(null);
+                      } else {
+                        // 其他会话：切换会话
+                        handleSelectSession(session);
+                        setActiveFile(null);
+                      }
+                    }}
+                    className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+                      isShowingResume
+                        ? "bg-accent"
+                        : isCurrentSession
+                        ? "bg-accent/50"
+                        : "hover:bg-accent/50"
+                    }`}
                   >
-                    <Trash2 className="w-3 h-3 text-muted-foreground" />
-                  </Button>
+                    <FileText className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm truncate">{session.filename}</p>
+                      <p className="text-xs text-muted-foreground">{formatDate(session.updated_at)}</p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={(e) => handleDeleteSession(e, session.thread_id)}
+                    >
+                      <Trash2 className="w-3 h-3 text-muted-foreground" />
+                    </Button>
+                  </div>
+                  {/* Reference Files - 只在当前选中的会话下显示 */}
+                  {threadId === session.thread_id && Object.keys(referenceFiles).length > 0 && (
+                    <div className="ml-6 mt-1 mb-2 space-y-1">
+                      <div className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground">
+                        <FileCode className="w-3 h-3" />
+                        <span>参考文档 ({Object.keys(referenceFiles).length})</span>
+                      </div>
+                      {Object.entries(referenceFiles).map(([path]) => {
+                        const filename = path.split("/").pop() || path;
+                        const isActive = activeFile === path;
+                        return (
+                          <button
+                            key={path}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveFile(isActive ? null : path);
+                            }}
+                            className={`w-full flex items-center gap-1.5 px-2 py-1.5 text-xs transition-colors rounded-md ${
+                              isActive ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
+                            }`}
+                          >
+                            <FileText className="w-3 h-3 text-primary flex-shrink-0" />
+                            <span className="truncate text-left">{filename}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              ))}
+              );
+              })}
               {sessions.length === 0 && (
                 <p className="text-sm text-muted-foreground text-center py-8">
                   暂无历史记录
@@ -881,16 +958,47 @@ export default function HomePage() {
           ) : (
             /* Split View - PDF on left, Chat on right */
             <div className="flex-1 flex min-h-0">
-              {/* Left Panel - Markdown Viewer with Diff */}
-              <div className="w-1/2 bg-card overflow-hidden">
-                <MarkdownViewer
-                  content={pdfText}
-                  isLoading={isParsing}
-                  className="h-full"
-                  pendingEdit={pendingEdit}
-                  onApprove={handleApproveEdit}
-                  onReject={handleRejectEdit}
-                />
+              {/* Left Panel - Markdown Viewer with Diff / Reference Doc */}
+              <div className="w-1/2 bg-card overflow-hidden flex flex-col">
+                {activeFile && referenceFiles[activeFile] ? (
+                  /* 参考文档视图 */
+                  <>
+                    <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-muted/30">
+                      <div className="flex items-center gap-2 text-sm">
+                        <FileCode className="w-4 h-4 text-primary" />
+                        <span className="font-medium truncate">{activeFile.split("/").pop()}</span>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setActiveFile(null)}
+                        className="h-7 px-2 text-xs"
+                      >
+                        <X className="w-3 h-3 mr-1" />
+                        返回简历
+                      </Button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-6">
+                      <div className="prose prose-sm max-w-none dark:prose-invert prose-table:text-sm prose-th:bg-muted/50 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 prose-table:border prose-th:border prose-td:border">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {Array.isArray(referenceFiles[activeFile].content)
+                            ? referenceFiles[activeFile].content.join("\n")
+                            : String(referenceFiles[activeFile].content || "")}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  /* 简历视图 */
+                  <MarkdownViewer
+                    content={pdfText}
+                    isLoading={isParsing}
+                    className="h-full"
+                    pendingEdit={pendingEdit}
+                    onApprove={handleApproveEdit}
+                    onReject={handleRejectEdit}
+                  />
+                )}
               </div>
 
               {/* Right Panel - Chat */}

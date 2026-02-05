@@ -91,15 +91,26 @@ export interface PendingEdit {
  * Check if thread is interrupted with a pending edit
  */
 export function getPendingEdit(state: ThreadState): PendingEdit | null {
-  if (!state.tasks) return null;
+  console.log("=== getPendingEdit ===");
+  console.log("state.tasks:", state.tasks);
+
+  if (!state.tasks) {
+    console.log("No tasks found");
+    return null;
+  }
 
   for (const task of state.tasks) {
+    console.log("Task:", task.id, task.name, "interrupts:", task.interrupts);
     if (task.interrupts && task.interrupts.length > 0) {
       for (const interrupt of task.interrupts) {
+        console.log("Interrupt:", interrupt);
+        console.log("Interrupt value:", interrupt.value);
         // 检查 action_requests 中是否有 edit_file
         const actionRequests = interrupt.value?.action_requests;
+        console.log("Action requests:", actionRequests);
         if (actionRequests && actionRequests.length > 0) {
-          const editAction = actionRequests.find(ar => ar.name === "edit_file");
+          const editAction = actionRequests.find((ar: { name: string }) => ar.name === "edit_file");
+          console.log("Edit action:", editAction);
           if (editAction) {
             return {
               interruptId: interrupt.id,
@@ -114,7 +125,22 @@ export function getPendingEdit(state: ThreadState): PendingEdit | null {
       }
     }
   }
+  console.log("No pending edit found");
   return null;
+}
+
+/**
+ * Values mode state structure for resume
+ */
+interface ResumeValuesState {
+  messages?: Array<{
+    type: string;
+    content: string | Array<{ type: string; text?: string }>;
+    tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
+    name?: string;
+    tool_call_id?: string;
+  }>;
+  files?: Record<string, { content: string[] }>;
 }
 
 /**
@@ -128,7 +154,7 @@ export async function* resumeWithDecision(
   pendingEdit: PendingEdit,
   decision: "approve" | "reject"
 ): AsyncGenerator<{
-  type: "tool_call" | "tool_result" | "ai_message" | "error" | "done";
+  type: "state_update" | "error" | "done";
   data: unknown;
 }> {
   const client = getLangGraphClient();
@@ -149,65 +175,22 @@ export async function* resumeWithDecision(
   console.log("Resuming with command:", command);
 
   try {
-    // Resume the run with streaming (使用 messages 模式)
+    // Resume the run with streaming (使用 values 模式)
     const streamResponse = client.runs.stream(threadId, "resume_enhancer", {
       command,
-      streamMode: "messages",
+      streamMode: "values",
     });
 
     for await (const event of streamResponse) {
       console.log("Resume stream event:", event.event, event.data);
 
-      // messages 模式返回 messages/partial 或 messages/complete 事件
-      if (event.event === "messages/partial" || event.event === "messages/complete") {
-        const eventData = event.data as [StreamMessage, unknown] | StreamMessage[];
-        const msg = Array.isArray(eventData) && eventData.length >= 1
-          ? (eventData[0] as StreamMessage)
-          : null;
+      const eventName = event.event as string;
 
-        if (!msg) continue;
-
-        // AI 消息带 tool_calls - 工具调用开始
-        if ((msg.type === "ai" || msg.type === "AIMessage") && msg.tool_calls && msg.tool_calls.length > 0) {
-          for (const tc of msg.tool_calls) {
-            yield {
-              type: "tool_call",
-              data: { id: tc.id, name: tc.name, args: tc.args }
-            };
-          }
-        }
-
-        // 工具结果消息
-        if (msg.type === "tool") {
-          yield {
-            type: "tool_result",
-            data: {
-              tool_call_id: msg.tool_call_id,
-              name: msg.name,
-              content: msg.content
-            }
-          };
-        }
-
-        // AI 最终回复
-        if (event.event === "messages/complete" &&
-            (msg.type === "ai" || msg.type === "AIMessage") &&
-            msg.content &&
-            (!msg.tool_calls || msg.tool_calls.length === 0)) {
-          let textContent = "";
-          if (typeof msg.content === "string") {
-            textContent = msg.content;
-          } else if (Array.isArray(msg.content)) {
-            textContent = msg.content
-              .filter((block) => block.type === "text")
-              .map((block) => block.text || "")
-              .join("\n");
-          }
-          if (textContent) {
-            yield { type: "ai_message", data: textContent };
-          }
-        }
-      } else if (event.event === "error") {
+      // values 模式返回完整的 state
+      if (eventName === "values") {
+        const state = event.data as ResumeValuesState;
+        yield { type: "state_update", data: state };
+      } else if (eventName === "error") {
         const errorData = event.data;
         let errorMessage = "未知错误";
         if (typeof errorData === "string") {
@@ -258,20 +241,22 @@ export async function updateThreadState(
 }
 
 /**
- * Stream message from LangGraph
+ * Values mode state structure
  */
-export interface StreamMessage {
-  content: string | Array<{ type: string; text?: string; thinking?: string }>;
-  type: string;  // "human" | "ai" | "tool"
-  name?: string;
-  tool_call_id?: string;
-  tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
-  id?: string;
+interface ValuesState {
+  messages?: Array<{
+    type: string;
+    content: string | Array<{ type: string; text?: string }>;
+    tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
+    name?: string;
+    tool_call_id?: string;
+  }>;
+  files?: Record<string, { content: string[] }>;
 }
 
 /**
  * Stream run for resume enhancement (chat mode)
- * Uses streamMode: "messages" for real-time tool call updates
+ * Uses streamMode: "values" to get full state snapshots
  * @param threadId - Thread ID
  * @param userMessage - User message
  * @param initialFiles - Optional initial files to load into agent state (first run only)
@@ -281,7 +266,7 @@ export async function* streamResumeEnhancement(
   userMessage: string,
   initialFiles?: Record<string, FileData>
 ): AsyncGenerator<{
-  type: "tool_call" | "tool_result" | "ai_message" | "error" | "done";
+  type: "state_update" | "error" | "done";
   data: unknown;
 }> {
   const client = getLangGraphClient();
@@ -300,65 +285,19 @@ export async function* streamResumeEnhancement(
   try {
     const streamResponse = client.runs.stream(threadId, "resume_enhancer", {
       input: Object.keys(input).length > 0 ? input : { messages: [] },
-      streamMode: "messages",
+      streamMode: "values",
     });
 
     for await (const event of streamResponse) {
       console.log("Stream event:", event.event, event.data);
 
-      // messages 模式返回 messages/partial 或 messages/complete 事件
-      // 数据格式: [message, metadata] tuple
-      if (event.event === "messages/partial" || event.event === "messages/complete") {
-        const eventData = event.data as [StreamMessage, unknown] | StreamMessage[];
-        // 处理 tuple 格式 [message, metadata] 或数组格式
-        const msg = Array.isArray(eventData) && eventData.length >= 1
-          ? (eventData[0] as StreamMessage)
-          : null;
+      const eventName = event.event as string;
 
-        if (!msg) continue;
-
-        // AI 消息带 tool_calls - 工具调用开始
-        if ((msg.type === "ai" || msg.type === "AIMessage") && msg.tool_calls && msg.tool_calls.length > 0) {
-          for (const tc of msg.tool_calls) {
-            yield {
-              type: "tool_call",
-              data: { id: tc.id, name: tc.name, args: tc.args }
-            };
-          }
-        }
-
-        // 工具结果消息
-        if (msg.type === "tool") {
-          yield {
-            type: "tool_result",
-            data: {
-              tool_call_id: msg.tool_call_id,
-              name: msg.name,
-              content: msg.content
-            }
-          };
-        }
-
-        // AI 最终回复（没有 tool_calls 的 AI 消息，且是 complete 事件）
-        if (event.event === "messages/complete" &&
-            (msg.type === "ai" || msg.type === "AIMessage") &&
-            msg.content &&
-            (!msg.tool_calls || msg.tool_calls.length === 0)) {
-          // 提取文本内容（处理 content_blocks 格式）
-          let textContent = "";
-          if (typeof msg.content === "string") {
-            textContent = msg.content;
-          } else if (Array.isArray(msg.content)) {
-            textContent = msg.content
-              .filter((block) => block.type === "text")
-              .map((block) => block.text || "")
-              .join("\n");
-          }
-          if (textContent) {
-            yield { type: "ai_message", data: textContent };
-          }
-        }
-      } else if (event.event === "error") {
+      // values 模式返回完整的 state
+      if (eventName === "values") {
+        const state = event.data as ValuesState;
+        yield { type: "state_update", data: state };
+      } else if (eventName === "error") {
         const errorData = event.data;
         let errorMessage = "未知错误";
         if (typeof errorData === "string") {

@@ -525,6 +525,7 @@ class GraphExecutor:
         - 单 stream_mode, 有 subgraphs: (namespace, data)
         - 多 stream_mode, 无 subgraphs: (mode, data)
         - 多 stream_mode, 有 subgraphs: (namespace, mode, data)
+        - messages 模式: (message, metadata) tuple 或直接 message
 
         LangGraph Platform SSE 事件名称格式：
         - 无 subgraphs: event: {mode}
@@ -534,12 +535,18 @@ class GraphExecutor:
         # 检查是否需要序列化消息数据
         current_mode = stream_mode if isinstance(stream_mode, str) else "values"
 
+        # 如果 chunk 本身是 BaseMessage，直接序列化（messages 模式单消息）
+        if isinstance(chunk, BaseMessage):
+            return SSEEvent(
+                event=current_mode,
+                data=chunk.model_dump()
+            )
+
         if isinstance(chunk, tuple):
             if len(chunk) == 2:
-                # (mode, data) 或 (namespace, data)
                 first, second = chunk
+                # (namespace, data) - subgraphs 单模式（namespace 是 tuple）
                 if isinstance(first, tuple):
-                    # (namespace, data) - subgraphs 单模式
                     namespace, data = chunk
                     mode = stream_mode if isinstance(stream_mode, str) else "values"
                     # 如果是 messages 模式，序列化消息数据
@@ -547,8 +554,14 @@ class GraphExecutor:
                         data = self._serialize_message_data(data)
                     event_name = self._format_event_name(mode, namespace)
                     return SSEEvent(event=event_name, data=data)
-                else:
-                    # (mode, data) - 多模式无 subgraphs
+                # (message, metadata) - messages 模式返回的 tuple
+                # 判断方式：first 是 BaseMessage 对象
+                elif isinstance(first, BaseMessage):
+                    # 这是 (message, metadata) 格式，序列化后返回
+                    data = [first.model_dump(), second]
+                    return SSEEvent(event=current_mode, data=data)
+                # (mode, data) - 多模式无 subgraphs（mode 是字符串）
+                elif isinstance(first, str):
                     mode, data = chunk
                     # 如果是 messages 模式，序列化消息数据
                     if mode in ("messages", "messages-tuple"):

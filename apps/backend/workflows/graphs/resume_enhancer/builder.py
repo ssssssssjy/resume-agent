@@ -4,12 +4,14 @@
 支持多轮对话和文件系统操作。
 
 Middleware:
-- FilesystemMiddleware: 文件系统工具 (ls, read_file, edit_file, glob, grep)
-  - 禁用 execute 和 write_file 工具（简历优化不需要执行命令或创建文件）
+- FilesystemMiddleware: 文件系统工具 (ls, read_file, write_file, edit_file, glob, grep)
+  - write_file 用于保存搜索结果为参考文档到 /references/ 目录
+  - 禁用 execute 工具（简历优化不需要执行命令）
 
 自定义工具：
-- github_search: GitHub 仓库搜索
-- search_trends: 多平台趋势搜索（GitHub Trending、HuggingFace、Reddit）
+- search_similar_projects: 相似项目搜索（基于简历项目描述和技术栈搜索 GitHub 相似项目，提取可学习的技术亮点）
+- search_tech_articles: 技术内容搜索（DEV.to、掘金、InfoQ、Reddit 讨论、HuggingFace 模型）
+- analyze_github_repo: GitHub 仓库深度分析（技术栈、指标、README 解析）
 """
 
 import logging
@@ -23,12 +25,15 @@ from langgraph.graph import StateGraph
 from config.app_config import config
 from llm.config import GENERAL_MODEL
 
-# 导入现有工具
-from workflows.graphs.resume_enhancer.tools.github_search import (
-    github_search,
-    search_opensource_projects,
+# 导入自定义中间件
+from workflows.graphs.resume_enhancer.middleware import EditValidationMiddleware
+
+# 导入工具
+from workflows.graphs.resume_enhancer.tools import (
+    search_similar_projects,  # 相似项目搜索（基于简历项目和技术栈）
+    search_tech_articles,     # 技术内容（DEV.to/掘金/InfoQ/Reddit/HuggingFace）
+    analyze_github_repo,      # GitHub 仓库深度分析
 )
-from workflows.graphs.resume_enhancer.tools.trend_search import search_trends
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +67,36 @@ SYSTEM_PROMPT = """你是一位资深的技术简历顾问，名叫"简历优化
 7. **直接修改简历文件**（使用 edit_file 工具）
 
 ## 可用工具
-- **read_file**: 读取简历文件 `/resume.md`
+
+### 文件操作
+- **read_file**: 读取文件（简历 `/resume.md` 或参考文档 `/references/*.md`）
+- **write_file**: 写入文件（**必须保存到 `/references/` 目录下**）
 - **edit_file**: 修改简历内容（用户会在界面上预览并确认）
-- **github_search**: 搜索 GitHub 仓库，了解技术趋势和热门项目
-- **search_opensource_projects**: 根据技术关键词查找相关开源项目
-- **search_trends**: 获取多平台趋势数据（GitHub Trending、HuggingFace、Reddit）
+- **ls**: 列出目录内容
+
+### 信息搜索（返回 `_document` 字段，需保存）
+- **search_similar_projects**: 相似项目搜索（核心工具）
+  - 参数：`resume_item`（简历项目描述）、`tech_stack`（技术栈列表）、`project_type`（项目类型，可选）
+  - 根据你的项目描述和技术栈，在 GitHub 上搜索相似的开源项目
+  - 计算相似度，优先返回技术栈匹配度高的项目
+  - 提取可学习的技术亮点，生成简历优化建议
+- **search_tech_articles**: 技术内容搜索（DEV.to、掘金、InfoQ、Reddit 讨论、HuggingFace 模型）
+- **analyze_github_repo**: 深度分析指定 GitHub 仓库（技术栈、架构、指标、README）
+
+## 文档沉淀规则（重要！！！）
+所有参考文档**必须保存到 `/references/` 目录下**，前端会自动在对话区展示这些文档。
+
+搜索类工具会在返回结果中包含 `_document` 字段，包含：
+- `content`: 格式化的 Markdown 文档内容
+- `suggested_path`: 建议的保存路径（如 `/references/tech_trends_RAG.md`）
+
+**规则：**
+1. 搜索后必须立即使用 write_file 保存文档
+2. 保存路径**必须以 `/references/` 开头**，例如：`/references/rag_research.md`
+3. 文件名应简洁明了，使用小写字母和下划线
+
+**错误示例：** `/rag_content.md` ❌
+**正确示例：** `/references/rag_content.md` ✅
 
 ## 对话风格
 - 友好专业，像一位资深导师
@@ -107,12 +137,15 @@ def _build_graph() -> StateGraph:
             enable_debug = os.getenv("ENVIRONMENT", "").lower() in ["local", "test"]
 
             # create_deep_agent 已内置 FilesystemMiddleware，不需要再传
+            # EditValidationMiddleware 在工具执行前验证 edit_file 参数
             return create_deep_agent(
                 model=self.model,
                 tools=self.tools,
                 system_prompt=SYSTEM_PROMPT,
                 checkpointer=checkpointer,
                 debug=enable_debug,
+                # 自定义中间件：验证 edit_file 参数，拒绝 no-op 编辑
+                middleware=[EditValidationMiddleware()],
                 # Human-in-the-loop: 编辑文件前需要用户确认
                 interrupt_on={
                     "edit_file": {"allowed_decisions": ["approve", "reject"]},
@@ -120,7 +153,11 @@ def _build_graph() -> StateGraph:
             )
 
     # 自定义工具列表
-    tools = [github_search, search_opensource_projects, search_trends]
+    tools = [
+        search_similar_projects,  # 相似项目搜索（基于简历项目和技术栈）
+        search_tech_articles,     # 技术内容（DEV.to/掘金/InfoQ/Reddit/HuggingFace）
+        analyze_github_repo,      # GitHub 仓库深度分析
+    ]
 
     return GraphBuilder(model=model, tools=tools)
 
