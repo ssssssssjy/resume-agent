@@ -4,6 +4,8 @@
 # 用法：
 #   ./deploy.sh              # 普通部署（无代理）
 #   ./deploy.sh --proxy      # 使用代理构建（适用于国内服务器）
+#   ./deploy.sh --no-cache   # 不使用缓存构建
+#   ./deploy.sh --proxy --no-cache  # 组合使用
 
 set -e
 
@@ -28,9 +30,11 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# 检查是否使用代理
+# 默认配置
 USE_PROXY=false
 PROXY_URL="http://127.0.0.1:7890"
+NO_CACHE=""
+SERVER_IP="47.100.221.91"
 
 for arg in "$@"; do
     case $arg in
@@ -41,6 +45,14 @@ for arg in "$@"; do
         --proxy=*)
             USE_PROXY=true
             PROXY_URL="${arg#*=}"
+            shift
+            ;;
+        --no-cache)
+            NO_CACHE="--no-cache"
+            shift
+            ;;
+        --ip=*)
+            SERVER_IP="${arg#*=}"
             shift
             ;;
     esac
@@ -63,11 +75,24 @@ log_info "开始部署 Resume Agent..."
 # 进入项目目录
 cd "$PROJECT_DIR"
 
+# 如果使用代理，设置 git 代理
+if [ "$USE_PROXY" = true ]; then
+    log_info "设置 git 代理..."
+    git config --global http.proxy "$PROXY_URL"
+    git config --global https.proxy "$PROXY_URL"
+    export http_proxy="$PROXY_URL"
+    export https_proxy="$PROXY_URL"
+fi
+
 # 拉取最新代码（如果是 git 仓库）
 if [ -d ".git" ]; then
     log_info "拉取最新代码..."
     git pull || log_warn "Git pull 失败，使用本地代码继续"
 fi
+
+# 生成前端环境变量文件
+log_info "配置前端 API 地址: http://$SERVER_IP:8123"
+echo "NEXT_PUBLIC_API_URL=http://$SERVER_IP:8123" > apps/frontend/.env.production
 
 # 检查 .env 文件
 if [ ! -f "apps/backend/.env" ]; then
@@ -105,11 +130,11 @@ fi
 
 # 构建后端镜像
 log_info "构建后端镜像..."
-docker build $NETWORK_ARG -f deploy/Dockerfile -t resume-agent:latest $BUILD_ARGS .
+docker build $NO_CACHE $NETWORK_ARG -f deploy/Dockerfile -t resume-agent:latest $BUILD_ARGS .
 
 # 构建前端镜像
 log_info "构建前端镜像..."
-docker build $NETWORK_ARG -f deploy/Dockerfile.frontend -t resume-agent-frontend:latest $BUILD_ARGS .
+docker build $NO_CACHE $NETWORK_ARG -f deploy/Dockerfile.frontend -t resume-agent-frontend:latest $BUILD_ARGS .
 
 # 启动服务
 log_info "启动服务..."
