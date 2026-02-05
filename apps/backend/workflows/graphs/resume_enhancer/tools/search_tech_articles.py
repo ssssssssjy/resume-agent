@@ -7,8 +7,7 @@
 - Reddit: 技术讨论帖子
 - HuggingFace: AI 模型和论文
 
-搜索结果会自动生成格式化的 Markdown 文档，
-Agent 应使用 write_file 保存到 /references/ 目录。
+返回简洁摘要 + 详细文档内容（供 Agent 使用 write_file 保存）。
 """
 import logging
 from datetime import datetime
@@ -36,7 +35,10 @@ async def search_tech_articles(
         max_results: 每个来源的最大返回结果数
 
     Returns:
-        包含文章、讨论、模型的搜索结果
+        包含简洁摘要和文档内容的字典：
+        - summary: 简洁的搜索结果摘要
+        - document_content: 详细的 Markdown 文档内容
+        - suggested_path: 建议保存路径
     """
     results = {
         "articles": [],
@@ -77,14 +79,16 @@ async def search_tech_articles(
         results["data_sources"].append("HuggingFace")
         results["models"].extend(hf_models)
 
-    # 生成参考文档
-    results["_document"] = {
-        "content": _format_document(keywords, results),
-        "suggested_path": get_document_path("tech_articles", "_".join(keywords[:3])),
-        "save_instruction": "请使用 write_file 工具将此文档保存到 suggested_path 路径",
-    }
+    # 生成文档内容和简洁摘要
+    document_content = _format_document(keywords, results)
+    suggested_path = get_document_path("tech_articles", "_".join(keywords[:3]))
+    summary = _format_summary(keywords, results, suggested_path)
 
-    return results
+    return {
+        "summary": summary,
+        "document_content": document_content,
+        "suggested_path": suggested_path,
+    }
 
 
 async def _search_devto(keywords: list[str], max_results: int = 5) -> list[dict]:
@@ -303,6 +307,46 @@ async def _search_huggingface(keywords: list[str], max_results: int = 5) -> list
         logger.warning(f"HuggingFace 搜索失败: {e}")
 
     return models[:max_results]
+
+
+def _format_summary(keywords: list[str], results: dict, suggested_path: str) -> str:
+    """生成简洁的搜索结果摘要"""
+    articles = results.get("articles", [])
+    discussions = results.get("discussions", [])
+    models = results.get("models", [])
+    sources = results.get("data_sources", [])
+
+    lines = []
+
+    # 统计
+    lines.append(f"搜索关键词：{', '.join(keywords)}")
+    lines.append(f"数据来源：{', '.join(sources)}")
+    lines.append(f"共找到 {len(articles)} 篇文章、{len(discussions)} 条讨论、{len(models)} 个模型")
+    lines.append("")
+
+    # Top 文章
+    if articles:
+        lines.append("**热门文章：**")
+        for article in articles[:3]:
+            title = article.get("title", "")[:50]
+            source = article.get("source", "")
+            reactions = article.get("reactions", 0)
+            lines.append(f"- [{source}] {title}... (👍{reactions})")
+        lines.append("")
+
+    # Top 模型
+    if models:
+        lines.append("**相关模型：**")
+        for m in models[:3]:
+            model_id = m.get("model_id", "")
+            likes = m.get("likes", 0)
+            lines.append(f"- {model_id} (❤️{likes})")
+        lines.append("")
+
+    # 保存提示
+    lines.append(f"请使用 write_file 将详细报告保存到 `{suggested_path}`")
+
+    return "\n".join(lines)
 
 
 def _format_document(keywords: list[str], results: dict) -> str:

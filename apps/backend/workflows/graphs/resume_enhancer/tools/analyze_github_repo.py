@@ -3,8 +3,7 @@
 深入分析 GitHub 仓库的技术栈、架构特点、核心功能等，
 为简历提供可参考的技术细节和量化指标。
 
-分析结果会自动生成格式化的 Markdown 文档，
-Agent 应使用 write_file 保存到 /references/ 目录。
+返回简洁摘要 + 详细文档内容（供 Agent 使用 write_file 保存）。
 """
 import logging
 from typing import Any
@@ -28,7 +27,10 @@ async def analyze_github_repo(repo: str) -> dict[str, Any]:
         repo: 仓库名称，格式为 "owner/repo" (如 "langchain-ai/langgraph")
 
     Returns:
-        仓库分析结果，包含技术栈、架构亮点、核心功能、指标等
+        包含简洁摘要和文档内容的字典：
+        - summary: 简洁的分析结果摘要
+        - document_content: 详细的 Markdown 文档内容
+        - suggested_path: 建议保存路径
     """
     result = {
         "repo": repo,
@@ -111,14 +113,60 @@ async def analyze_github_repo(repo: str) -> dict[str, Any]:
         logger.error(f"分析仓库 {repo} 失败: {e}")
         result["error"] = str(e)
 
-    # 生成参考文档（供 Agent 保存）
-    result["_document"] = {
-        "content": format_repo_analysis_document(repo, result),
-        "suggested_path": get_document_path("repo_analysis", repo),
-        "save_instruction": "请使用 write_file 工具将此文档保存到 suggested_path 路径",
+    # 生成文档内容和简洁摘要
+    document_content = format_repo_analysis_document(repo, result)
+    suggested_path = get_document_path("repo_analysis", repo)
+    summary = _format_summary(repo, result, suggested_path)
+
+    return {
+        "summary": summary,
+        "document_content": document_content,
+        "suggested_path": suggested_path,
     }
 
-    return result
+
+def _format_summary(repo: str, result: dict, suggested_path: str) -> str:
+    """生成简洁的分析结果摘要"""
+    if result.get("error"):
+        return f"分析失败：{result['error']}"
+
+    lines = []
+
+    # 基本信息
+    basic = result.get("basic_info", {})
+    metrics = result.get("metrics", {})
+
+    lines.append(f"**{repo}** 分析完成")
+    lines.append("")
+
+    # 核心指标
+    lines.append("**核心指标：**")
+    lines.append(f"- ⭐ Stars: {metrics.get('stars', 0):,}")
+    lines.append(f"- 🍴 Forks: {metrics.get('forks', 0):,}")
+    lines.append(f"- 👥 贡献者: {metrics.get('contributors', 0)}")
+    if metrics.get("latest_release"):
+        lines.append(f"- 📦 最新版本: {metrics['latest_release']}")
+    lines.append("")
+
+    # 技术栈
+    tech_stack = result.get("tech_stack", [])
+    if tech_stack:
+        top_langs = [f"{t['language']} ({t['percentage']}%)" for t in tech_stack[:3]]
+        lines.append(f"**技术栈：** {', '.join(top_langs)}")
+        lines.append("")
+
+    # 核心功能
+    features = result.get("key_features", [])
+    if features:
+        lines.append("**核心功能：**")
+        for f in features[:3]:
+            lines.append(f"- {f[:60]}...")
+        lines.append("")
+
+    # 保存提示
+    lines.append(f"请使用 write_file 将详细报告保存到 `{suggested_path}`")
+
+    return "\n".join(lines)
 
 
 async def _get_repo_info(repo: str) -> dict:

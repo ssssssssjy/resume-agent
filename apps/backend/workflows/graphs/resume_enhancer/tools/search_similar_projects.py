@@ -6,8 +6,7 @@
 3. 从这些项目中提取可学习的技术亮点
 4. 生成简历优化建议
 
-搜索结果会自动生成格式化的 Markdown 文档，
-Agent 应使用 write_file 保存到 /references/ 目录。
+返回简洁摘要 + 详细文档内容（供 Agent 使用 write_file 保存）。
 """
 import logging
 import re
@@ -105,10 +104,10 @@ async def search_similar_projects(
         max_results: 返回的最大项目数量（默认8个）
 
     Returns:
-        相似项目分析结果，包含：
-        - similar_projects: 相似项目列表（含 README 摘要和技术栈）
-        - learnable_highlights: 可学习的技术亮点
-        - enhancement_suggestions: 简历优化建议
+        包含简洁摘要和文档内容的字典：
+        - summary: 简洁的搜索结果摘要
+        - document_content: 详细的 Markdown 文档内容
+        - suggested_path: 建议保存路径
     """
     results = {
         "original_item": resume_item,
@@ -186,14 +185,16 @@ async def search_similar_projects(
         results["similar_projects"], tech_stack
     )
 
-    # 7. 生成参考文档
-    results["_document"] = {
-        "content": _format_document(results),
-        "suggested_path": get_document_path("similar_projects", "_".join(tech_stack[:3])),
-        "save_instruction": "请使用 write_file 工具将此文档保存到 suggested_path 路径",
-    }
+    # 7. 生成文档内容和简洁摘要
+    document_content = _format_document(results)
+    suggested_path = get_document_path("similar_projects", "_".join(tech_stack[:3]))
+    summary = _format_summary(results, suggested_path)
 
-    return results
+    return {
+        "summary": summary,
+        "document_content": document_content,
+        "suggested_path": suggested_path,
+    }
 
 
 def _generate_context_queries(resume_item: str, tech_stack: list[str], project_type: str) -> list[str]:
@@ -440,6 +441,52 @@ def _extract_keywords_to_add(projects: list[dict], user_tech_stack: list[str]) -
 
     sorted_keywords = sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True)
     return [kw for kw, _ in sorted_keywords[:15]]
+
+
+def _format_summary(results: dict, suggested_path: str) -> str:
+    """生成简洁的搜索结果摘要"""
+    projects = results.get("similar_projects", [])
+    suggestions = results.get("enhancement_suggestions", [])
+    keywords = results.get("keywords_to_add", [])
+
+    lines = []
+
+    # 项目数量
+    lines.append(f"找到 {len(projects)} 个相似项目：")
+    lines.append("")
+
+    # Top 3 推荐
+    if projects:
+        lines.append("**Top 3 推荐：**")
+        for i, proj in enumerate(projects[:3], 1):
+            name = proj.get("name", "")
+            stars = proj.get("stars", 0)
+            desc = proj.get("description", "")[:50]
+            if desc and len(proj.get("description", "")) > 50:
+                desc += "..."
+            lines.append(f"{i}. {name} (⭐{stars:,}) - {desc}")
+        lines.append("")
+
+    # 核心建议
+    if suggestions:
+        lines.append("**核心建议：**")
+        for s in suggestions[:3]:
+            # 简化建议，去掉 markdown 链接
+            simplified = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', s)
+            if len(simplified) > 80:
+                simplified = simplified[:80] + "..."
+            lines.append(f"- {simplified}")
+        lines.append("")
+
+    # 建议关键词
+    if keywords:
+        lines.append(f"**建议补充关键词：** {', '.join(keywords[:8])}")
+        lines.append("")
+
+    # 文档保存提示
+    lines.append(f"请使用 write_file 将详细报告保存到 `{suggested_path}`")
+
+    return "\n".join(lines)
 
 
 async def _search_github_repos(query: str, max_results: int = 10) -> list[dict]:

@@ -3,21 +3,26 @@
 基于 deepagents 框架构建简历增强 Agent，
 支持多轮对话和文件系统操作。
 
+架构：
+- 主 Agent: 负责与用户对话、分析简历、修改文件
+- 研究子 Agent: 负责执行搜索任务，自动保存文档，返回简洁摘要
+
 Middleware:
 - FilesystemMiddleware: 文件系统工具 (ls, read_file, write_file, edit_file, glob, grep)
-  - write_file 用于保存搜索结果为参考文档到 /references/ 目录
-  - 禁用 execute 工具（简历优化不需要执行命令）
+- SubAgentMiddleware: 提供 task 工具启动子 Agent 执行研究任务
+- EditValidationMiddleware: 验证 edit_file 参数
 
-自定义工具：
-- search_similar_projects: 相似项目搜索（基于简历项目描述和技术栈搜索 GitHub 相似项目，提取可学习的技术亮点）
-- search_tech_articles: 技术内容搜索（DEV.to、掘金、InfoQ、Reddit 讨论、HuggingFace 模型）
-- analyze_github_repo: GitHub 仓库深度分析（技术栈、指标、README 解析）
+自定义工具（研究子 Agent 专用）：
+- search_similar_projects: 相似项目搜索
+- search_tech_articles: 技术内容搜索
+- analyze_github_repo: GitHub 仓库深度分析
 """
 
 import logging
 import os
 
 from deepagents import create_deep_agent
+from deepagents.middleware.subagents import SubAgentMiddleware, SubAgent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph
@@ -40,7 +45,43 @@ logger = logging.getLogger(__name__)
 # 简历增强使用的模型
 RESUME_ENHANCER_MODEL = GENERAL_MODEL
 
-# 系统提示词
+# 研究子 Agent 的系统提示词
+RESEARCH_AGENT_PROMPT = """你是简历优化的研究助手，专门负责执行搜索和分析任务。
+
+## 你的职责
+1. 执行 GitHub 项目搜索、技术文章搜索等研究任务
+2. 分析搜索结果，提取有价值的信息
+3. **自动保存详细的研究文档**到 `/references/` 目录
+4. 返回**简洁的摘要**给主 Agent
+
+## 工作流程
+1. 根据任务描述执行搜索
+2. 使用 write_file 将详细结果保存到 `/references/` 目录
+3. 返回简洁摘要（包含：找到多少项目、Top 3 推荐、核心建议、文档保存路径）
+
+## 返回格式示例
+```
+找到 8 个相似项目：
+
+**Top 3 推荐：**
+1. OpenSPG/KAG (⭐8,516) - 知识图谱增强 RAG
+2. Mintplex-Labs/anything-llm (⭐54,213) - 企业级 RAG 应用
+3. labring/FastGPT (⭐27,076) - 知识库问答平台
+
+**核心建议：**
+- 补充 knowledge-graph、multi-hop-reasoning 等关键词
+- 添加量化指标（如检索准确率、响应延迟）
+- 参考高星项目的技术描述方式
+
+详细报告已保存到 `/references/similar_projects_RAG.md`
+```
+
+## 注意事项
+- 文档路径必须以 `/references/` 开头
+- 返回内容要简洁，详细信息放在文档中
+- 如果搜索无结果，也要说明原因"""
+
+# 主 Agent 系统提示词
 SYSTEM_PROMPT = """你是一位资深的技术简历顾问，名叫"简历优化助手"。
 
 你的任务是通过对话帮助用户优化简历中的技术描述。
@@ -63,40 +104,28 @@ SYSTEM_PROMPT = """你是一位资深的技术简历顾问，名叫"简历优化
 3. 提供技术亮点建议，帮助用户在简历中补充细节
 4. 准备面试要点，帮助用户应对面试官的追问
 5. 针对目标职位调整表述方式
-6. 搜索 GitHub 上的相关开源项目，获取技术趋势和最佳实践
+6. **使用研究子 Agent 搜索相关项目和技术文章**
 7. **直接修改简历文件**（使用 edit_file 工具）
 
 ## 可用工具
 
 ### 文件操作
 - **read_file**: 读取文件（简历 `/resume.md` 或参考文档 `/references/*.md`）
-- **write_file**: 写入文件（**必须保存到 `/references/` 目录下**）
+- **write_file**: 写入文件（保存到 `/references/` 目录下）
 - **edit_file**: 修改简历内容（用户会在界面上预览并确认）
 - **ls**: 列出目录内容
 
-### 信息搜索（返回 `_document` 字段，需保存）
-- **search_similar_projects**: 相似项目搜索（核心工具）
-  - 参数：`resume_item`（简历项目描述）、`tech_stack`（技术栈列表）、`project_type`（项目类型，可选）
-  - 根据你的项目描述和技术栈，在 GitHub 上搜索相似的开源项目
-  - 计算相似度，优先返回技术栈匹配度高的项目
-  - 提取可学习的技术亮点，生成简历优化建议
-- **search_tech_articles**: 技术内容搜索（DEV.to、掘金、InfoQ、Reddit 讨论、HuggingFace 模型）
-- **analyze_github_repo**: 深度分析指定 GitHub 仓库（技术栈、架构、指标、README）
+### 研究任务（使用 task 工具）
+当需要搜索 GitHub 项目、技术文章时，使用 `task` 工具启动研究子 Agent：
+- **subagent_type**: "research"
+- **description**: 详细描述搜索任务，例如：
+  - "搜索与 RAG、LangChain 相关的 GitHub 项目，分析技术亮点"
+  - "搜索 '基于多跳检索的问答系统' 相关项目，提取可学习的技术点"
 
-## 文档沉淀规则（重要！！！）
-所有参考文档**必须保存到 `/references/` 目录下**，前端会自动在对话区展示这些文档。
-
-搜索类工具会在返回结果中包含 `_document` 字段，包含：
-- `content`: 格式化的 Markdown 文档内容
-- `suggested_path`: 建议的保存路径（如 `/references/tech_trends_RAG.md`）
-
-**规则：**
-1. 搜索后必须立即使用 write_file 保存文档
-2. 保存路径**必须以 `/references/` 开头**，例如：`/references/rag_research.md`
-3. 文件名应简洁明了，使用小写字母和下划线
-
-**错误示例：** `/rag_content.md` ❌
-**正确示例：** `/references/rag_content.md` ✅
+研究子 Agent 会：
+1. 执行搜索
+2. 自动保存详细文档到 `/references/`
+3. 返回简洁摘要
 
 ## 对话风格
 - 友好专业，像一位资深导师
@@ -124,42 +153,58 @@ def _build_graph() -> StateGraph:
         temperature=0.7,
     )
 
+    # 研究子 Agent 使用的工具
+    research_tools = [
+        search_similar_projects,  # 相似项目搜索（基于简历项目和技术栈）
+        search_tech_articles,     # 技术内容（DEV.to/掘金/InfoQ/Reddit/HuggingFace）
+        analyze_github_repo,      # GitHub 仓库深度分析
+    ]
+
+    # 定义研究子 Agent
+    research_subagent: SubAgent = {
+        "name": "research",
+        "description": "执行 GitHub 项目搜索、技术文章搜索等研究任务，自动保存详细文档到 /references/ 目录，返回简洁摘要给主 Agent",
+        "system_prompt": RESEARCH_AGENT_PROMPT,
+        "tools": research_tools,
+    }
+
     class GraphBuilder:
         """Graph 构建器 wrapper，模拟 StateGraph 的 compile 方法"""
 
-        def __init__(self, model, tools):
+        def __init__(self, model, research_subagent):
             self.model = model
-            self.tools = tools
+            self.research_subagent = research_subagent
 
         def compile(self, checkpointer=None):
             """编译 graph，传入 checkpointer"""
             # 启用 debug 模式（控制台输出工具调用详情）
             enable_debug = os.getenv("ENVIRONMENT", "").lower() in ["local", "test"]
 
-            # create_deep_agent 已内置 FilesystemMiddleware，不需要再传
-            # EditValidationMiddleware 在工具执行前验证 edit_file 参数
+            # 创建 SubAgentMiddleware，提供 task 工具
+            subagent_middleware = SubAgentMiddleware(
+                default_model=self.model,
+                subagents=[self.research_subagent],
+                general_purpose_agent=False,  # 只使用自定义的 research agent
+            )
+
+            # create_deep_agent 已内置 FilesystemMiddleware
             return create_deep_agent(
                 model=self.model,
-                tools=self.tools,
+                tools=[],  # 主 Agent 不直接使用搜索工具，通过 task 调用子 Agent
                 system_prompt=SYSTEM_PROMPT,
                 checkpointer=checkpointer,
                 debug=enable_debug,
-                # 自定义中间件：验证 edit_file 参数，拒绝 no-op 编辑
-                middleware=[EditValidationMiddleware()],
+                middleware=[
+                    EditValidationMiddleware(),  # 验证 edit_file 参数
+                    subagent_middleware,         # 提供 task 工具启动子 Agent
+                ],
                 # Human-in-the-loop: 编辑文件前需要用户确认
                 interrupt_on={
                     "edit_file": {"allowed_decisions": ["approve", "reject"]},
                 },
             )
 
-    # 自定义工具列表
-    tools = [
-        search_similar_projects,  # 相似项目搜索（基于简历项目和技术栈）
-        search_tech_articles,     # 技术内容（DEV.to/掘金/InfoQ/Reddit/HuggingFace）
-        analyze_github_repo,      # GitHub 仓库深度分析
-    ]
-
-    return GraphBuilder(model=model, tools=tools)
+    return GraphBuilder(model=model, research_subagent=research_subagent)
 
 
 def build_resume_enhancer():
