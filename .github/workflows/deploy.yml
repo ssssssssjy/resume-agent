@@ -1,0 +1,69 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # 支持手动触发
+
+env:
+  SERVER_HOST: ${{ secrets.SERVER_HOST }}
+  SERVER_USER: ${{ secrets.SERVER_USER }}
+  DEPLOY_PATH: /root/resume_agent
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to server
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+            set -e
+
+            cd ${{ env.DEPLOY_PATH }} || exit 1
+
+            echo "=== 拉取最新代码 ==="
+            git pull origin main
+
+            echo "=== 重新构建并启动服务 ==="
+            cd deploy
+
+            # 使用缓存构建（更快），如果失败则不使用缓存
+            docker compose build || docker compose build --no-cache
+
+            # 重启服务
+            docker compose down
+            docker compose up -d
+
+            echo "=== 等待服务启动 ==="
+            sleep 15
+
+            echo "=== 检查服务状态 ==="
+            docker compose ps
+
+            # 检查健康状态
+            if docker compose ps | grep -q "unhealthy"; then
+              echo "警告: 存在不健康的服务"
+              docker compose logs --tail=50
+              exit 1
+            fi
+
+            echo "=== 部署完成 ==="
+          ENDSSH
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "部署失败，请检查日志"
