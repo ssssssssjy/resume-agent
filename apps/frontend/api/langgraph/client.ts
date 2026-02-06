@@ -1,6 +1,7 @@
 import { Client } from "@langchain/langgraph-sdk";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// 如果 NEXT_PUBLIC_API_URL 为空，使用相对路径（通过 Nginx 反向代理）
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 /**
  * Get LangGraph SDK client
