@@ -1,4 +1,4 @@
-# Resume Agent 内部记录
+# QuickStart
 
 ## 服务器
 
@@ -10,7 +10,7 @@
 
 ```bash
 # 一键部署（国内服务器需要代理）
-./deploy/deploy.sh --proxy --no-cache
+./deploy/deploy.sh --proxy
 
 # 参数说明
 --proxy      # 启用代理（默认 127.0.0.1:7890）
