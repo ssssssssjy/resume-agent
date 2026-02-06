@@ -140,11 +140,16 @@ async def parse_pdf(file: UploadFile = File(...)):
     try:
         import pymupdf4llm
 
-        # 使用 pymupdf4llm 提取文本
+        # 使用 pymupdf4llm 提取文本（传入字节流，提取所有页面）
         doc = fitz.open(stream=content, filetype="pdf")
-        raw_text = pymupdf4llm.to_markdown(doc)
         num_pages = len(doc)
         doc.close()
+
+        # pymupdf4llm.to_markdown 需要传入文件路径或字节流，不是 doc 对象
+        raw_text = pymupdf4llm.to_markdown(
+            fitz.open(stream=content, filetype="pdf"),
+            pages=list(range(num_pages)),  # 明确指定所有页面
+        )
 
         # 使用 LLM 转换为结构化 Markdown
         llm = ChatOpenAI(
