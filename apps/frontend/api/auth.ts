@@ -9,6 +9,8 @@ export interface AuthResponse {
 export interface UserInfo {
   user_id: string;
   username: string;
+  email?: string;
+  avatar_url?: string;
 }
 
 // Token 管理
@@ -81,6 +83,25 @@ export async function login(
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.detail || "登录失败");
+  }
+
+  const data = await response.json();
+  setToken(data.token);
+  setStoredUser({ user_id: data.user_id, username: data.username });
+  return data;
+}
+
+// Google OAuth 登录
+export async function googleLogin(credential: string): Promise<AuthResponse> {
+  const response = await fetch(`${API_BASE}/api/auth/google`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ credential }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || "Google 登录失败");
   }
 
   const data = await response.json();

@@ -39,10 +39,25 @@ def init_tables():
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
+                password_hash TEXT,
+                google_id TEXT UNIQUE,
+                email TEXT,
+                avatar_url TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+
+        # 迁移：为已有数据库添加 Google OAuth 相关列
+        for stmt in [
+            "ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL",
+            "ALTER TABLE users ADD COLUMN google_id TEXT UNIQUE",
+            "ALTER TABLE users ADD COLUMN email TEXT",
+            "ALTER TABLE users ADD COLUMN avatar_url TEXT",
+        ]:
+            try:
+                conn.execute(stmt)
+            except Exception:
+                conn.rollback()  # 列已存在或已 nullable，忽略
 
         # 创建 token 表
         conn.execute("""

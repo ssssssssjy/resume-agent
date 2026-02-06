@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { login, register } from "@/api/auth";
+import { login, register, googleLogin } from "@/api/auth";
+import { GoogleLogin } from "@react-oauth/google";
 import { Loader2 } from "lucide-react";
 
 interface LoginFormProps {
@@ -30,6 +31,20 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
       onSuccess();
     } catch (err) {
       setError(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSuccess = async (credentialResponse: { credential?: string }) => {
+    if (!credentialResponse.credential) return;
+    setError("");
+    setIsLoading(true);
+    try {
+      await googleLogin(credentialResponse.credential);
+      onSuccess();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google 登录失败");
     } finally {
       setIsLoading(false);
     }
@@ -109,6 +124,24 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
             )}
           </Button>
         </form>
+
+        {/* 分隔线 */}
+        <div className="my-6 flex items-center gap-3">
+          <div className="flex-1 h-px bg-gray-300 dark:bg-gray-600" />
+          <span className="text-sm text-gray-500 dark:text-gray-400">或</span>
+          <div className="flex-1 h-px bg-gray-300 dark:bg-gray-600" />
+        </div>
+
+        {/* Google 登录 */}
+        <div className="flex justify-center">
+          <GoogleLogin
+            onSuccess={handleGoogleSuccess}
+            onError={() => setError("Google 登录失败")}
+            size="large"
+            width="100%"
+            text={isLogin ? "signin_with" : "signup_with"}
+          />
+        </div>
 
         <div className="mt-6 text-center">
           <button

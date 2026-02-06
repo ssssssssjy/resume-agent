@@ -63,6 +63,11 @@ class Config:
         return value
 
     @property
+    def google_client_id(self) -> str | None:
+        """Google OAuth Client ID (可选)"""
+        return os.getenv("GOOGLE_CLIENT_ID")
+
+    @property
     def github_token(self) -> str | None:
         """GitHub Token (可选)"""
         return os.getenv("GITHUB_TOKEN")

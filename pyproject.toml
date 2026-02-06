@@ -23,6 +23,7 @@ dependencies = [
     "python-multipart>=0.0.22",
     "pillow>=12.1.0",
     "pymupdf4llm>=0.2.9",
+    "google-auth>=2.29.0",
 ]
 
 [dependency-groups]

@@ -88,7 +88,9 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "http://47.100.221.91:3000",  # 生产服务器
+        "http://47.100.221.91:3000",  # 生产服务器 (IP)
+        "http://resumedigger.top",     # 生产服务器 (域名)
+        "http://resumedigger.top:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],

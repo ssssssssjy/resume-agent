@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { QueryProvider } from "@/components/providers/query-provider";
+import { GoogleAuthProvider } from "@/components/providers/google-auth-provider";
 
 export const metadata: Metadata = {
   title: "Resume Enhancer Agent",
@@ -15,7 +16,9 @@ export default function RootLayout({
   return (
     <html lang="zh-CN">
       <body className="antialiased">
-        <QueryProvider>{children}</QueryProvider>
+        <QueryProvider>
+          <GoogleAuthProvider>{children}</GoogleAuthProvider>
+        </QueryProvider>
       </body>
     </html>
   );
