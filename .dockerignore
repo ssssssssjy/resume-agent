@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+
+# Node modules
+node_modules
+apps/frontend/node_modules
+**/node_modules
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+.env.local
+
+# Build outputs
+.next
+apps/frontend/.next
+dist
+build
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test
+coverage
+.pytest_cache
+
+# Docker (avoid recursive context)
+docker-compose*.yml
+
+# Documentation
+*.md
+docs
+
+# Misc
+.claude
+references
