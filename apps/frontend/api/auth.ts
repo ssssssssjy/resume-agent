@@ -1,6 +1,9 @@
 import { buildApiUrl, API_ENDPOINTS } from "./config";
 import type { AuthResponse, UserInfo } from "@/types";
 
+// Re-export types for convenience
+export type { UserInfo, AuthResponse } from "@/types";
+
 // Token 管理
 const TOKEN_KEY = "auth_token";
 const USER_KEY = "auth_user";
