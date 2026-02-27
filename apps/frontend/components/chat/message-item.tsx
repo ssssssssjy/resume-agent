@@ -18,7 +18,7 @@ const TOOL_NAMES: Record<string, string> = {
   search_opensource_projects: "搜索开源项目",
   search_trends: "搜索技术趋势",
   write_todos: "更新待办",
-  task: "调用子任务",
+  task: "研究",
 };
 
 interface MessageItemProps {
@@ -45,7 +45,10 @@ export function MessageItem({ message }: MessageItemProps) {
               const name = TOOL_NAMES[tool.name] || tool.name;
               // 提取关键参数用于展示
               let detail = "";
-              if (tool.args?.file_path) {
+              if (tool.name === "task" && tool.args?.description) {
+                // task 工具显示研究描述
+                detail = String(tool.args.description);
+              } else if (tool.args?.file_path) {
                 detail = String(tool.args.file_path);
               } else if (tool.args?.query) {
                 detail = String(tool.args.query);
