@@ -245,14 +245,16 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     // 使用三层匹配策略找到实际的 oldString
     const match = findMatchingString(currentPendingEdit.oldString, pdfText);
 
-    // 乐观更新
+    // 乐观更新 - 立即计算新内容
     const optimisticContent = pdfText.replace(match.matchedString, currentPendingEdit.newString);
     const contentChanged = optimisticContent !== pdfText;
 
+    // 立即清除 pending 状态
     setPendingEdit(null);
 
     if (!contentChanged) {
       setMessages(prev => [...prev, { role: "assistant", content: "修改未生效（内容未找到）" }]);
+      return null;
     }
 
     // 后台同步到 Session DB
@@ -260,39 +262,40 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
       onSessionUpdate(threadId, optimisticContent);
     }
 
-    // 后台发送 resume
+    // 后台异步发送 resume，不阻塞 UI 更新
     setIsLoading(true);
-    try {
-      const stream = resumeWithDecision(threadId, currentPendingEdit, "approve");
+    (async () => {
+      try {
+        const stream = resumeWithDecision(threadId, currentPendingEdit, "approve");
 
-      for await (const event of stream) {
-        if (event.type === "state_update") {
-          const state = event.data as { messages?: Message[] };
-          if (state.messages) {
-            const parsedMessages = parseStateMessages(state.messages as never[]);
-            setMessages(parsedMessages);
+        for await (const event of stream) {
+          if (event.type === "state_update") {
+            const state = event.data as { messages?: Message[] };
+            if (state.messages) {
+              const parsedMessages = parseStateMessages(state.messages as never[]);
+              setMessages(parsedMessages);
+            }
           }
         }
-      }
 
-      // Check for more pending edits
-      const state = await getThreadState(threadId) as ThreadState;
-      const newEdit = getPendingEdit(state);
-      if (newEdit && newEdit.interruptId !== currentPendingEdit.interruptId) {
-        if (optimisticContent.includes(newEdit.oldString)) {
-          setPendingEdit(newEdit);
+        // Check for more pending edits
+        const state = await getThreadState(threadId) as ThreadState;
+        const newEdit = getPendingEdit(state);
+        if (newEdit && newEdit.interruptId !== currentPendingEdit.interruptId) {
+          if (optimisticContent.includes(newEdit.oldString)) {
+            setPendingEdit(newEdit);
+          }
         }
+      } catch (error) {
+        console.error("Failed to approve edit:", error);
+        setMessages(prev => [...prev, { role: "assistant", content: "后台同步失败，但修改已应用。" }]);
+      } finally {
+        setIsLoading(false);
       }
+    })();
 
-      return optimisticContent;
-    } catch (error) {
-      console.error("Failed to approve edit:", error);
-      setPendingEdit(currentPendingEdit);
-      setMessages(prev => [...prev, { role: "assistant", content: "修改过程中出现错误，请重试。" }]);
-      return null;
-    } finally {
-      setIsLoading(false);
-    }
+    // 立即返回乐观更新的内容，不等待后台完成
+    return optimisticContent;
   }, [pendingEdit, threadId, onSessionUpdate]);
 
   // Handle reject edit
