@@ -1,7 +1,11 @@
 import { Client } from "@langchain/langgraph-sdk";
-
-// 如果 NEXT_PUBLIC_API_URL 为空，使用相对路径（通过 Nginx 反向代理）
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "";
+import { API_BASE_URL } from "../config";
+import type {
+  ThreadState,
+  PendingEdit,
+  FileData,
+  StateMessage,
+} from "@/types";
 
 /**
  * Get LangGraph SDK client
@@ -31,87 +35,20 @@ export async function getThreadState(threadId: string): Promise<ThreadState> {
 }
 
 /**
- * Action request from deepagents interrupt
- */
-interface ActionRequest {
-  name: string;
-  args: {
-    file_path: string;
-    old_string: string;
-    new_string: string;
-    replace_all?: boolean;
-  };
-  description?: string;
-}
-
-/**
- * Interrupt value from deepagents
- */
-interface InterruptValue {
-  action_requests: ActionRequest[];
-  review_configs: Array<{
-    action_name: string;
-    allowed_decisions: string[];
-  }>;
-}
-
-/**
- * Thread state with interrupt info
- */
-export interface ThreadState {
-  values: {
-    messages?: Array<{ type: string; content: string }>;
-    files?: Record<string, { content: string[] }>;
-  };
-  next?: string[];
-  tasks?: Array<{
-    id: string;
-    name: string;
-    interrupts?: Array<{
-      value: InterruptValue;
-      id: string;
-      resumable?: boolean;
-      ns?: string[];
-    }>;
-  }>;
-}
-
-/**
- * Pending edit info extracted from interrupt
- */
-export interface PendingEdit {
-  interruptId: string;
-  filePath: string;
-  oldString: string;
-  newString: string;
-  taskId: string;
-  actionName: string;
-}
-
-/**
  * Check if thread is interrupted with a pending edit
  */
 export function getPendingEdit(state: ThreadState): PendingEdit | null {
-  console.log("=== getPendingEdit ===");
-  console.log("state.tasks:", state.tasks);
-
   if (!state.tasks) {
-    console.log("No tasks found");
     return null;
   }
 
   for (const task of state.tasks) {
-    console.log("Task:", task.id, task.name, "interrupts:", task.interrupts);
     if (task.interrupts && task.interrupts.length > 0) {
       for (const interrupt of task.interrupts) {
-        console.log("Interrupt:", interrupt);
-        console.log("Interrupt value:", interrupt.value);
         // 检查 action_requests 中是否有 edit_file
         const actionRequests = interrupt.value?.action_requests;
-        console.log("Action requests:", actionRequests);
         if (actionRequests && actionRequests.length > 0) {
-          const editAction = actionRequests.find((ar: { name: string }) => ar.name === "edit_file");
-          console.log("Edit action:", editAction);
+          const editAction = actionRequests.find((ar) => ar.name === "edit_file");
           if (editAction) {
             return {
               interruptId: interrupt.id,
@@ -126,7 +63,6 @@ export function getPendingEdit(state: ThreadState): PendingEdit | null {
       }
     }
   }
-  console.log("No pending edit found");
   return null;
 }
 
@@ -134,21 +70,12 @@ export function getPendingEdit(state: ThreadState): PendingEdit | null {
  * Values mode state structure for resume
  */
 interface ResumeValuesState {
-  messages?: Array<{
-    type: string;
-    content: string | Array<{ type: string; text?: string }>;
-    tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
-    name?: string;
-    tool_call_id?: string;
-  }>;
-  files?: Record<string, { content: string[] }>;
+  messages?: StateMessage[];
+  files?: Record<string, FileData>;
 }
 
 /**
  * Resume thread with user decision (approve/reject) and stream the response
- *
- * HITLResponse format for deepagents HumanInTheLoopMiddleware:
- * { decisions: [{ type: "approve" }] } or { decisions: [{ type: "reject", message: "..." }] }
  */
 export async function* resumeWithDecision(
   threadId: string,
@@ -166,28 +93,21 @@ export async function* resumeWithDecision(
     : { decisions: [{ type: "reject", message: "用户拒绝了此修改" }] };
 
   // Send Command to resume the interrupted task
-  // 使用 interrupt id 作为 key，HITLResponse 作为 value
   const command = {
     resume: {
       [pendingEdit.interruptId]: hitlResponse,
     },
   };
 
-  console.log("Resuming with command:", command);
-
   try {
-    // Resume the run with streaming (使用 values 模式)
     const streamResponse = client.runs.stream(threadId, "resume_enhancer", {
       command,
       streamMode: "values",
     });
 
     for await (const event of streamResponse) {
-      console.log("Resume stream event:", event.event, event.data);
-
       const eventName = event.event as string;
 
-      // values 模式返回完整的 state
       if (eventName === "values") {
         const state = event.data as ResumeValuesState;
         yield { type: "state_update", data: state };
@@ -206,28 +126,8 @@ export async function* resumeWithDecision(
 
     yield { type: "done", data: null };
   } catch (error) {
-    let errorMessage = "连接服务器失败";
-    if (error instanceof Error) {
-      if (error.message.includes("fetch") || error.message.includes("network") || error.message.includes("connect")) {
-        errorMessage = "无法连接到服务器，请检查后端服务是否正常运行";
-      } else {
-        errorMessage = error.message;
-      }
-    } else if (typeof error === "object" && error !== null) {
-      const err = error as Record<string, unknown>;
-      errorMessage = err.message as string || err.error as string || JSON.stringify(error);
-    }
-    yield { type: "error", data: errorMessage };
+    yield { type: "error", data: formatError(error) };
   }
-}
-
-/**
- * File data structure for deepagents FilesystemMiddleware
- */
-export interface FileData {
-  content: string[];
-  created_at: string;
-  modified_at: string;
 }
 
 /**
@@ -242,25 +142,7 @@ export async function updateThreadState(
 }
 
 /**
- * Values mode state structure
- */
-interface ValuesState {
-  messages?: Array<{
-    type: string;
-    content: string | Array<{ type: string; text?: string }>;
-    tool_calls?: Array<{ name: string; args: Record<string, unknown>; id?: string }>;
-    name?: string;
-    tool_call_id?: string;
-  }>;
-  files?: Record<string, { content: string[] }>;
-}
-
-/**
  * Stream run for resume enhancement (chat mode)
- * Uses streamMode: "values" to get full state snapshots
- * @param threadId - Thread ID
- * @param userMessage - User message
- * @param initialFiles - Optional initial files to load into agent state (first run only)
  */
 export async function* streamResumeEnhancement(
   threadId: string,
@@ -272,7 +154,7 @@ export async function* streamResumeEnhancement(
 }> {
   const client = getLangGraphClient();
 
-  // 构建输入，包含消息和可选的初始文件
+  // 构建输入
   const input: Record<string, unknown> = {};
 
   if (userMessage) {
@@ -290,13 +172,10 @@ export async function* streamResumeEnhancement(
     });
 
     for await (const event of streamResponse) {
-      console.log("Stream event:", event.event, event.data);
-
       const eventName = event.event as string;
 
-      // values 模式返回完整的 state
       if (eventName === "values") {
-        const state = event.data as ValuesState;
+        const state = event.data as ResumeValuesState;
         yield { type: "state_update", data: state };
       } else if (eventName === "error") {
         const errorData = event.data;
@@ -313,74 +192,26 @@ export async function* streamResumeEnhancement(
 
     yield { type: "done", data: null };
   } catch (error) {
-    let errorMessage = "连接服务器失败";
-    if (error instanceof Error) {
-      if (error.message.includes("fetch") || error.message.includes("network") || error.message.includes("connect")) {
-        errorMessage = "无法连接到服务器，请检查后端服务是否正常运行";
-      } else {
-        errorMessage = error.message;
-      }
-    } else if (typeof error === "object" && error !== null) {
-      const err = error as Record<string, unknown>;
-      errorMessage = err.message as string || err.error as string || JSON.stringify(error);
-    }
-    yield { type: "error", data: errorMessage };
+    yield { type: "error", data: formatError(error) };
   }
 }
 
 /**
- * Types for LangGraph state
+ * Format error message
  */
-export interface TechPoint {
-  index: number;
-  title: string;
-  content: string;
-  technologies: string[];
-  business_context: string;
+function formatError(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.message.includes("fetch") || error.message.includes("network") || error.message.includes("connect")) {
+      return "无法连接到服务器，请检查后端服务是否正常运行";
+    }
+    return error.message;
+  }
+  if (typeof error === "object" && error !== null) {
+    const err = error as Record<string, unknown>;
+    return err.message as string || err.error as string || JSON.stringify(error);
+  }
+  return "连接服务器失败";
 }
 
-export interface OpenSourceRef {
-  name: string;
-  stars: number;
-  description: string;
-  url: string;
-  relevance: string;
-}
-
-export interface TrendingTech {
-  tech: string;
-  repo: string;
-  url: string;
-  stars: number;
-  description: string;
-}
-
-export interface SearchResult {
-  examples: Record<string, unknown>[];
-  github_trending: TrendingTech[];
-  reddit_posts: Record<string, unknown>[];
-  huggingface_models: Record<string, unknown>[];
-  opensource_refs: OpenSourceRef[];
-  business_context: string;
-}
-
-export interface EnhancementResult {
-  original_title: string;
-  original_content: string;
-  ai_suggestion: string;
-  tech_highlights: string[];
-  interview_tips: string[];
-  industry_comparison: string;
-}
-
-export interface ResumeEnhancerState {
-  resume_content: string;
-  target_job: string;
-  language: string;
-  tech_points: TechPoint[];
-  current_point_index: number;
-  search_results: Record<number, SearchResult>;
-  enhancement_results: Record<number, EnhancementResult>;
-  final_report: string;
-  messages: unknown[];
-}
+// Re-export types for convenience
+export type { ThreadState, PendingEdit, FileData } from "@/types";

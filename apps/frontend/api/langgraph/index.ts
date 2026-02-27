@@ -8,14 +8,4 @@ export {
   resumeWithDecision,
 } from "./client";
 
-export type {
-  TechPoint,
-  OpenSourceRef,
-  TrendingTech,
-  SearchResult,
-  EnhancementResult,
-  ResumeEnhancerState,
-  ThreadState,
-  PendingEdit,
-  FileData,
-} from "./client";
+export type { ThreadState, PendingEdit, FileData } from "./client";

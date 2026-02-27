@@ -1,24 +1,13 @@
 import { getAuthHeaders } from "./auth";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-export interface Session {
-  thread_id: string;
-  filename: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface SessionDetail extends Session {
-  resume_content: string;
-}
+import { buildApiUrl, API_ENDPOINTS } from "./config";
+import type { Session, SessionDetail } from "@/types";
 
 export async function createSession(data: {
   thread_id: string;
   filename: string;
   resume_content: string;
 }): Promise<SessionDetail> {
-  const response = await fetch(`${API_BASE}/api/sessions`, {
+  const response = await fetch(buildApiUrl(API_ENDPOINTS.SESSIONS.BASE), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...getAuthHeaders() },
     body: JSON.stringify(data),
@@ -27,14 +16,14 @@ export async function createSession(data: {
 }
 
 export async function listSessions(limit = 50): Promise<Session[]> {
-  const response = await fetch(`${API_BASE}/api/sessions?limit=${limit}`, {
+  const response = await fetch(buildApiUrl(`${API_ENDPOINTS.SESSIONS.BASE}?limit=${limit}`), {
     headers: getAuthHeaders(),
   });
   return response.json();
 }
 
 export async function getSession(threadId: string): Promise<SessionDetail> {
-  const response = await fetch(`${API_BASE}/api/sessions/${threadId}`, {
+  const response = await fetch(buildApiUrl(API_ENDPOINTS.SESSIONS.DETAIL(threadId)), {
     headers: getAuthHeaders(),
   });
   if (!response.ok) {
@@ -44,7 +33,7 @@ export async function getSession(threadId: string): Promise<SessionDetail> {
 }
 
 export async function deleteSession(threadId: string): Promise<void> {
-  await fetch(`${API_BASE}/api/sessions/${threadId}`, {
+  await fetch(buildApiUrl(API_ENDPOINTS.SESSIONS.DETAIL(threadId)), {
     method: "DELETE",
     headers: getAuthHeaders(),
   });
@@ -56,10 +45,13 @@ export async function updateSession(data: {
   resume_content: string;
 }): Promise<SessionDetail> {
   // 使用 createSession 的 UPSERT 功能来更新
-  const response = await fetch(`${API_BASE}/api/sessions`, {
+  const response = await fetch(buildApiUrl(API_ENDPOINTS.SESSIONS.BASE), {
     method: "POST",
     headers: { "Content-Type": "application/json", ...getAuthHeaders() },
     body: JSON.stringify(data),
   });
   return response.json();
 }
+
+// Re-export types for convenience
+export type { Session, SessionDetail } from "@/types";

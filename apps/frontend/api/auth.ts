@@ -1,15 +1,5 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-export interface AuthResponse {
-  user_id: string;
-  username: string;
-  token: string;
-}
-
-export interface UserInfo {
-  user_id: string;
-  username: string;
-}
+import { buildApiUrl, API_ENDPOINTS } from "./config";
+import type { AuthResponse, UserInfo } from "@/types";
 
 // Token 管理
 const TOKEN_KEY = "auth_token";
@@ -50,7 +40,7 @@ export async function register(
   username: string,
   password: string
 ): Promise<AuthResponse> {
-  const response = await fetch(`${API_BASE}/api/auth/register`, {
+  const response = await fetch(buildApiUrl(API_ENDPOINTS.AUTH.REGISTER), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
@@ -72,7 +62,7 @@ export async function login(
   username: string,
   password: string
 ): Promise<AuthResponse> {
-  const response = await fetch(`${API_BASE}/api/auth/login`, {
+  const response = await fetch(buildApiUrl(API_ENDPOINTS.AUTH.LOGIN), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
@@ -93,7 +83,7 @@ export async function login(
 export async function logout(): Promise<void> {
   const token = getToken();
   if (token) {
-    await fetch(`${API_BASE}/api/auth/logout`, {
+    await fetch(buildApiUrl(API_ENDPOINTS.AUTH.LOGOUT), {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => {});
@@ -107,7 +97,7 @@ export async function getCurrentUser(): Promise<UserInfo | null> {
   if (!token) return null;
 
   try {
-    const response = await fetch(`${API_BASE}/api/auth/me`, {
+    const response = await fetch(buildApiUrl(API_ENDPOINTS.AUTH.ME), {
       headers: { Authorization: `Bearer ${token}` },
     });
 
