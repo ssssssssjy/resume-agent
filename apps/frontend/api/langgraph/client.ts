@@ -1,5 +1,5 @@
 import { Client } from "@langchain/langgraph-sdk";
-import { API_BASE_URL } from "../config";
+import { getApiBaseUrl } from "../config";
 import type {
   ThreadState,
   PendingEdit,
@@ -9,10 +9,18 @@ import type {
 
 /**
  * Get LangGraph SDK client
+ * 在客户端使用当前页面的 origin 作为 API URL
  */
 export function getLangGraphClient(): Client {
+  let apiUrl = getApiBaseUrl();
+
+  // 如果是空字符串（生产环境客户端），使用当前页面的 origin
+  if (!apiUrl && typeof window !== "undefined") {
+    apiUrl = window.location.origin;
+  }
+
   return new Client({
-    apiUrl: API_BASE_URL,
+    apiUrl,
   });
 }
 
