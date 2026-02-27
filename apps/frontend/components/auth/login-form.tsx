@@ -40,9 +40,14 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
       <div className="w-full max-w-md p-8 bg-white dark:bg-gray-800 rounded-2xl shadow-xl">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-            简历优化助手
+            简历挖掘机
           </h1>
-          <p className="mt-2 text-gray-600 dark:text-gray-400">
+          <p className="mt-3 text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
+            基于 Multi-Agent 架构，结合技术舆情分析
+            <br />
+            为你的简历注入前沿视角
+          </p>
+          <p className="mt-4 text-gray-500 dark:text-gray-500 text-xs">
             {isLogin ? "登录您的账户" : "创建新账户"}
           </p>
         </div>
