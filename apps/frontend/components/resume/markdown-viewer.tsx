@@ -6,31 +6,8 @@ import { Button } from "@/components/ui/button";
 import ReactMarkdown from "react-markdown";
 import { FileText, Loader2, Check, X } from "lucide-react";
 import { diffLines, Change } from "diff";
-import type { PendingEdit } from "@/api/langgraph";
-
-// 三层匹配策略（与 page.tsx 保持一致）
-function findMatchingString(
-  targetString: string,
-  content: string
-): { found: boolean; matchedString: string } {
-  // 第一层：精确匹配
-  if (content.includes(targetString)) {
-    return { found: true, matchedString: targetString };
-  }
-
-  const trimmedTarget = targetString.trim();
-  const lines = content.split("\n");
-
-  // 第二层：trim 匹配
-  for (const line of lines) {
-    if (line.trim() === trimmedTarget || line.includes(trimmedTarget)) {
-      return { found: true, matchedString: line };
-    }
-  }
-
-  // 第三层略（组件内不做模糊匹配，依赖 page.tsx 传入已修正的值）
-  return { found: false, matchedString: targetString };
-}
+import { findMatchingString } from "@/lib/string-match";
+import type { PendingEdit } from "@/types";
 
 interface MarkdownViewerProps {
   content: string;
@@ -55,31 +32,9 @@ export function MarkdownViewer({
   const previewContent = useMemo(() => {
     if (!pendingEdit || !content) return null;
 
-    // 调试：打印 oldString 和 content 的详细信息
-    console.log("=== MarkdownViewer Debug ===");
-    console.log("oldString length:", pendingEdit.oldString.length);
-    console.log("oldString lines:", pendingEdit.oldString.split("\n").length);
-    console.log("oldString (full):", JSON.stringify(pendingEdit.oldString));
-    console.log("content length:", content.length);
-    console.log("direct includes:", content.includes(pendingEdit.oldString));
-
     // 使用三层匹配策略找到实际的 oldString
     const match = findMatchingString(pendingEdit.oldString, content);
-    console.log("match result:", match);
-
-    const result = content.replace(match.matchedString, pendingEdit.newString);
-
-    // 检查替换是否成功
-    if (result === content) {
-      // 检查是否是空操作（oldString === newString）
-      if (pendingEdit.oldString === pendingEdit.newString) {
-        console.warn("MarkdownViewer: oldString === newString (no-op edit from Agent)");
-      } else {
-        console.warn("MarkdownViewer: oldString not found after matching");
-      }
-      console.log("newString:", JSON.stringify(pendingEdit.newString));
-    }
-    return result;
+    return content.replace(match.matchedString, pendingEdit.newString);
   }, [content, pendingEdit]);
 
   // Calculate diff for highlighting
@@ -91,23 +46,20 @@ export function MarkdownViewer({
   // 自动滚动到第一个变更位置
   useEffect(() => {
     if (pendingEdit && diffResult && firstChangeRef.current) {
-      // 延迟执行以确保 DOM 已渲染
       setTimeout(() => {
         firstChangeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       }, 100);
     }
   }, [pendingEdit, diffResult]);
 
-  // 包装回调以添加调试
+  // 包装回调
   const handleApprove = useCallback(() => {
-    console.log("Approve clicked, pendingEdit:", pendingEdit);
     onApprove?.();
-  }, [onApprove, pendingEdit]);
+  }, [onApprove]);
 
   const handleReject = useCallback(() => {
-    console.log("Reject clicked, pendingEdit:", pendingEdit);
     onReject?.();
-  }, [onReject, pendingEdit]);
+  }, [onReject]);
 
   if (isLoading) {
     return (
@@ -216,7 +168,7 @@ function DiffContent({
           firstChangeFound = true;
         }
 
-        // 在第一个变更内容后面显示按钮（无论是新增还是删除）
+        // 在第一个变更内容后面显示按钮
         const shouldRenderButtons = isFirstChange && !buttonsRendered;
         if (shouldRenderButtons) {
           buttonsRendered = true;
