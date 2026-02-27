@@ -199,6 +199,9 @@ async def search_similar_projects(
 
 def _generate_context_queries(resume_item: str, tech_stack: list[str], project_type: str) -> list[str]:
     """根据项目上下文生成精准检索词"""
+    if not tech_stack:
+        raise ValueError("tech_stack 不能为空，请提供至少一个技术栈")
+
     queries = []
 
     # 1. 基于技术栈组合生成查询
