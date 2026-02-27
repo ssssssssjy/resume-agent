@@ -39,6 +39,19 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
       <div className="w-full max-w-md p-8 bg-white dark:bg-gray-800 rounded-2xl shadow-xl">
         <div className="text-center mb-8">
+          {/* Logo */}
+          <div className="flex justify-center mb-4">
+            <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-lg">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" className="w-10 h-10">
+                <rect x="6" y="4" width="16" height="22" rx="2" fill="white"/>
+                <rect x="9" y="10" width="10" height="2" rx="1" fill="#3B82F6"/>
+                <rect x="9" y="14" width="7" height="2" rx="1" fill="#3B82F6" opacity="0.6"/>
+                <rect x="9" y="18" width="8" height="2" rx="1" fill="#3B82F6" opacity="0.4"/>
+                <circle cx="22" cy="22" r="6" fill="#8B5CF6"/>
+                <path d="M22 19v6M19 22h6" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </div>
+          </div>
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
             简历挖掘机
           </h1>
