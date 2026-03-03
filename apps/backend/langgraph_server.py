@@ -24,11 +24,11 @@ import fitz  # pymupdf
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.sessions import router as sessions_router
+from api.sessions import router as sessions_router, prefs_router
 from api.auth import router as auth_router
 
 from config.app_config import config
-from config.langgraph_config import _configure_langgraph_logging, get_checkpointer
+from config.langgraph_config import _configure_langgraph_logging, get_checkpointer, get_store
 
 # 确保第三方库日志级别被设置（在导入其他模块前）
 _configure_langgraph_logging()
@@ -50,11 +50,10 @@ WORKFLOW_BUILDERS = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 获取 checkpointer（根据环境自动选择内存/SQLite/PostgreSQL）
-    async with get_checkpointer() as checkpointer:
+    async with get_checkpointer() as checkpointer, get_store() as store:
         # 编译所有 workflow graphs
         graphs = {
-            name: builder().compile(checkpointer=checkpointer)
+            name: builder().compile(checkpointer=checkpointer, store=store)
             for name, builder in WORKFLOW_BUILDERS.items()
         }
 
@@ -98,6 +97,8 @@ app.add_middleware(
 
 # 挂载会话管理路由
 app.include_router(sessions_router)
+# 挂载用户偏好路由（长期记忆）
+app.include_router(prefs_router)
 # 挂载用户认证路由
 app.include_router(auth_router)
 

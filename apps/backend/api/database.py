@@ -78,6 +78,16 @@ def init_tables():
             CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC)
         """)
 
+        # 创建用户偏好表（长期记忆）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                target_job TEXT,
+                style TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
         conn.commit()
 
 

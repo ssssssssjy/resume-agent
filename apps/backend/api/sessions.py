@@ -141,3 +141,54 @@ async def delete_session(thread_id: str, authorization: Optional[str] = Header(N
         raise HTTPException(status_code=404, detail="Session not found")
 
     return {"success": True}
+
+
+# ==================== 用户偏好（长期记忆）====================
+
+prefs_router = APIRouter(prefix="/api/preferences", tags=["preferences"])
+
+
+class UserPreferences(BaseModel):
+    target_job: Optional[str] = None
+    style: Optional[str] = None
+
+
+@prefs_router.get("", response_model=UserPreferences)
+async def get_preferences(authorization: Optional[str] = Header(None)):
+    """获取用户偏好"""
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录或登录已过期")
+
+    with get_db_context() as conn:
+        cursor = conn.execute(
+            "SELECT target_job, style FROM user_preferences WHERE user_id = %s",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+
+    if not row:
+        return UserPreferences()
+
+    return UserPreferences(target_job=row["target_job"], style=row["style"])
+
+
+@prefs_router.put("")
+async def update_preferences(data: UserPreferences, authorization: Optional[str] = Header(None)):
+    """更新用户偏好"""
+    user_id = get_user_from_token(authorization)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="未登录或登录已过期")
+
+    with get_db_context() as conn:
+        conn.execute("""
+            INSERT INTO user_preferences (user_id, target_job, style, updated_at)
+            VALUES (%s, %s, %s, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                target_job = EXCLUDED.target_job,
+                style = EXCLUDED.style,
+                updated_at = NOW()
+        """, (user_id, data.target_job, data.style))
+        conn.commit()
+
+    return {"success": True}

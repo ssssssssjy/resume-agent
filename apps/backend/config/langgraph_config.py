@@ -6,6 +6,8 @@ from typing import AsyncIterator
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.store.base import BaseStore
+from langgraph.store.memory import InMemoryStore
 
 from .app_config import config
 
@@ -107,3 +109,36 @@ async def get_checkpointer() -> AsyncIterator[BaseCheckpointSaver]:
         # 内存（最简单，但热重载丢失）
         logger.info("使用 MemorySaver Checkpointer（内存存储）")
         yield MemorySaver()
+
+
+@asynccontextmanager
+async def get_store() -> AsyncIterator[BaseStore]:
+    """获取 Store（用于长期记忆，跨 thread 存储用户偏好）
+
+    优先级:
+    1. WORKFLOW_DATABASE_URL → PostgreSQL（生产环境）
+    2. 默认 → InMemoryStore（内存）
+    """
+    db_url = config.workflow_database_url
+
+    if db_url:
+        from langgraph.store.postgres.aio import AsyncPostgresStore
+        from psycopg_pool import AsyncConnectionPool
+
+        logger.info("使用 PostgreSQL Store（长期记忆）")
+
+        pool = AsyncConnectionPool(
+            conninfo=db_url,
+            min_size=2,
+            max_size=10,
+            open=False,
+            kwargs={"autocommit": True},
+        )
+
+        async with pool:
+            store = AsyncPostgresStore(pool)
+            await store.setup()
+            yield store
+    else:
+        logger.info("使用 InMemoryStore（长期记忆，重启丢失）")
+        yield InMemoryStore()
