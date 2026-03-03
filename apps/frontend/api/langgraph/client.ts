@@ -147,7 +147,8 @@ export async function updateThreadState(
 export async function* streamResumeEnhancement(
   threadId: string,
   userMessage: string,
-  initialFiles?: Record<string, FileData>
+  initialFiles?: Record<string, FileData>,
+  userId?: string
 ): AsyncGenerator<{
   type: "state_update" | "error" | "done";
   data: unknown;
@@ -169,6 +170,7 @@ export async function* streamResumeEnhancement(
     const streamResponse = client.runs.stream(threadId, "resume_enhancer", {
       input: Object.keys(input).length > 0 ? input : { messages: [] },
       streamMode: "values",
+      config: userId ? { configurable: { user_id: userId } } : undefined,
     });
 
     for await (const event of streamResponse) {

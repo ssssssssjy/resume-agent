@@ -48,6 +48,7 @@ export default function HomePage() {
     restoreSession,
     resetChat,
   } = useChat({
+    userId: user?.id,
     onSessionUpdate: (tid, content) => {
       if (pdfFilename) {
         updateSessionContent({ thread_id: tid, filename: pdfFilename, resume_content: content });

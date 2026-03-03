@@ -15,6 +15,7 @@ import { buildApiUrl, API_ENDPOINTS } from "@/api/config";
 
 interface UseChatOptions {
   onSessionUpdate?: (threadId: string, content: string) => void;
+  userId?: string;
 }
 
 interface UseChatReturn {
@@ -45,7 +46,7 @@ interface UseChatReturn {
  * 聊天逻辑 Hook
  */
 export function useChat(options: UseChatOptions = {}): UseChatReturn {
-  const { onSessionUpdate } = options;
+  const { onSessionUpdate, userId } = options;
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -119,7 +120,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     setIsLoading(true);
 
     try {
-      const stream = streamResumeEnhancement(threadId, userMessage);
+      const stream = streamResumeEnhancement(threadId, userMessage, undefined, userId);
 
       for await (const event of stream) {
         if (event.type === "state_update") {
@@ -190,7 +191,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
 
       setMessages([{ role: "user", content: "我上传了我的简历，请帮我分析并优化。" }]);
 
-      const stream = streamResumeEnhancement(thread_id, initialMessage, initialFiles);
+      const stream = streamResumeEnhancement(thread_id, initialMessage, initialFiles, userId);
 
       for await (const event of stream) {
         if (event.type === "state_update") {

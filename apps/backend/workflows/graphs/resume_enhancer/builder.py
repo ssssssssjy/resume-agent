@@ -175,8 +175,8 @@ def _build_graph() -> StateGraph:
             self.model = model
             self.research_subagent = research_subagent
 
-        def compile(self, checkpointer=None):
-            """编译 graph，传入 checkpointer"""
+        def compile(self, checkpointer=None, store=None):
+            """编译 graph，传入 checkpointer 和 store"""
             # 启用 debug 模式（控制台输出工具调用详情）
             enable_debug = os.getenv("ENVIRONMENT", "").lower() in ["local", "test"]
 
@@ -186,6 +186,10 @@ def _build_graph() -> StateGraph:
                 tools=[],  # 主 Agent 不直接使用搜索工具，通过 task 调用子 Agent
                 system_prompt=SYSTEM_PROMPT,
                 checkpointer=checkpointer,
+                store=store,
+                # 长期记忆：从虚拟文件系统中的 AGENTS.md 读取用户偏好
+                # Agent 可通过 edit_file 自动更新记忆，下次对话时自动注入 system prompt
+                memory=["/AGENTS.md"],
                 debug=enable_debug,
                 subagents=[self.research_subagent],  # 传入研究子 Agent
                 middleware=[
